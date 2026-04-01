@@ -632,6 +632,7 @@ end
         os.execute("sleep 1")
     end
 end
+end
 
 local function webhook_config()
     clear_screen()
