@@ -331,11 +331,25 @@ local function START_REJOIN()
 end
 
 local function SETUP()
-    BANNER(); OUT(C.YELLOW.."[ Noka Configuration ]"..C.RESET); OUT("1) Auto Search  2) Manual Entry")
+    BANNER()
+    OUT(C.YELLOW.."[ Noka Configuration ]"..C.RESET)
+    OUT(" 1) automatic")
+    OUT(" 2) manual")
+    OUT(C.BLUE .. " ────────────────────────────────────────────────────────────" .. C.RESET)
     io.write(C.CYAN.." Select: "..C.RESET); local mode = io.read()
-    local found = {}; if mode == "1" then local list = SH("pm list packages | grep roblox"); for p in list:gmatch("package:([%w%.%-]+)") do found[#found+1] = p end else io.write(C.YELLOW.." Packages (comma-sep): "..C.RESET); local raw = io.read(); for p in raw:gmatch("([^,]+)") do found[#found+1] = p:gsub("%s+", "") end end
+    
+    local found = {}
+    if mode == "1" then
+        local list = SH("pm list packages | grep roblox")
+        for p in list:gmatch("package:([%w%.%-]+)") do found[#found+1] = p end
+    else
+        io.write(C.YELLOW.." Packages: "..C.RESET)
+        local raw = io.read()
+        for p in raw:gmatch("([^,]+)") do found[#found+1] = p:gsub("%s+", "") end
+    end
     if #found == 0 then OUT(C.RED.."No packages!"); return end
-    OUT("\nDetected:"); for i, p in ipairs(found) do OUT(string.format(" %d) %s", i, p)) end
+    OUT("\nDetected:")
+    for i, p in ipairs(found) do OUT(string.format(" %d) %s", i, p)) end
     io.write(C.CYAN.."\n URL / ID / Private (PID:CODE): "..C.RESET); local url = io.read()
     io.write(C.CYAN.." Delay (30): "..C.RESET); local delay = tonumber(io.read()) or 30
     io.write(C.CYAN.." Executor Path: "..C.RESET); local base_path = io.read()
