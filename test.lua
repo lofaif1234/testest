@@ -2,7 +2,6 @@
 
 --[[
 NOKA.lua - Roblox Auto-Rejoin Manager for Termux
-Author: Expert Lua Developer
 Version: 1.0.0
 --]]
 
@@ -32,7 +31,7 @@ local colors = {
 local config = nil
 local running = false
 
--- Simple JSON encoder/decoder (built-in, no dependencies)
+-- Simple JSON encoder/decoder
 local json = {}
 
 function json.encode_table(t, indent)
@@ -41,7 +40,6 @@ function json.encode_table(t, indent)
     local is_array = true
     local i = 1
     
-    -- Check if it's an array
     for k, v in pairs(t) do
         if type(k) ~= "number" or k ~= i then
             is_array = false
@@ -91,21 +89,11 @@ function json.encode(data)
 end
 
 function json.decode(str)
-    local function parse_string()
-        local start = string.find(str, '"', pos + 1)
-        if not start then error("Invalid JSON: unterminated string") end
-        local s = string.sub(str, pos + 1, start - 1)
-        pos = start
-        return s
-    end
-    
-    -- Simple decoder for basic JSON
-    local result, _ = load("return " .. str:gsub('"', '"'):gsub("'", '"'))
-    if result then
-        local success, val = pcall(result)
-        if success then
-            return val
-        end
+    local success, val = pcall(function()
+        return load("return " .. str)()
+    end)
+    if success then
+        return val
     end
     return nil
 end
@@ -124,18 +112,15 @@ end
 
 local function ensure_directories()
     local home = os.getenv("HOME")
-    -- Create directories with proper permissions
     os.execute("mkdir -p " .. home .. "/NOKA 2>/dev/null")
     os.execute("mkdir -p " .. HEARTBEAT_DIR .. " 2>/dev/null")
     os.execute("chmod 755 " .. home .. "/NOKA 2>/dev/null")
-    os.execute("chmod 755 " .. HEARTBEAT_DIR .. " 2>/dev/null")
 end
 
 local function load_config()
     ensure_directories()
     local file = io.open(CONFIG_PATH, "r")
     if not file then
-        log("No config file found", "INFO")
         return nil
     end
     
@@ -150,8 +135,8 @@ local function load_config()
         return json.decode(content)
     end)
     
-    if not success or not result then
-        log("Failed to parse config.json: " .. tostring(result), "ERROR")
+    if not success then
+        log("Failed to parse config.json", "ERROR")
         return nil
     end
     
@@ -160,11 +145,6 @@ end
 
 local function save_config(cfg)
     ensure_directories()
-    
-    -- Backup existing config if it exists
-    if os.rename(CONFIG_PATH, CONFIG_PATH .. ".backup") then
-        log("Created backup of existing config", "INFO")
-    end
     
     local file = io.open(CONFIG_PATH, "w")
     if not file then
@@ -177,15 +157,13 @@ local function save_config(cfg)
     end)
     
     if not success then
-        log("Failed to encode config to JSON: " .. tostring(json_str), "ERROR")
+        log("Failed to encode config to JSON", "ERROR")
         file:close()
         return false
     end
     
     file:write(json_str)
     file:close()
-    
-    -- Set proper permissions
     os.execute("chmod 644 " .. CONFIG_PATH .. " 2>/dev/null")
     
     log("Configuration saved successfully", "INFO")
@@ -208,7 +186,7 @@ local function print_banner()
 ║    ██║ ╚████║╚██████╔╝██║  ██╗██║  ██║                    ║
 ║    ╚═╝  ╚═══╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝                    ║
 ║                                                           ║
-║           ROOBLOX AUTO-REJOIN MANAGER v1.0               ║
+║           ROBLOX AUTO-REJOIN MANAGER v1.0                ║
 ╚═══════════════════════════════════════════════════════════╝
 ]] .. colors.reset)
 end
@@ -233,14 +211,13 @@ local function find_roblox_packages()
     local all_packages = {}
     local handle = io.popen("pm list packages 2>/dev/null")
     if not handle then
-        io.write(colors.red .. "Failed to run pm command. Make sure you have proper permissions.\n" .. colors.reset)
+        io.write(colors.red .. "Failed to run pm command.\n" .. colors.reset)
         return nil
     end
     
     local all_output = handle:read("*a")
     handle:close()
     
-    -- Search for any Roblox-related packages
     for line in all_output:gmatch("[^\r\n]+") do
         local pkg = line:match("^package:(.+)$")
         if pkg and (pkg:lower():match("roblox") or pkg:lower():match("rblx")) then
@@ -248,7 +225,6 @@ local function find_roblox_packages()
         end
     end
     
-    -- Display found packages
     if #all_packages > 0 then
         io.write(colors.green .. "\nFound " .. #all_packages .. " Roblox package(s):\n" .. colors.reset)
         for i, pkg in ipairs(all_packages) do
@@ -257,24 +233,6 @@ local function find_roblox_packages()
         return all_packages
     else
         io.write(colors.red .. "\nNo Roblox packages found!\n" .. colors.reset)
-        io.write(colors.yellow .. "Common Roblox package names to try:\n" .. colors.reset)
-        io.write("  - com.roblox.client\n")
-        io.write("  - com.roblox.client2\n")
-        io.write("  - com.roblox.clien\n")
-        io.write("  - com.rblx.client\n\n")
-        
-        -- Try to show all packages for debugging
-        io.write(colors.yellow .. "Would you like to see all installed packages? (y/n): " .. colors.reset)
-        local show_all = io.read():lower()
-        if show_all == "y" then
-            local debug_handle = io.popen("pm list packages | head -30")
-            local debug_output = debug_handle:read("*a")
-            debug_handle:close()
-            io.write(colors.gray .. debug_output .. colors.reset)
-            io.write(colors.white .. "\nPress Enter to continue..." .. colors.reset)
-            io.read()
-        end
-        
         return nil
     end
 end
@@ -294,23 +252,6 @@ local function verify_package_exists(package_name)
         return true
     end
     
-    -- Try partial match
-    local partial_check = io.popen("pm list packages | grep -i '" .. package_name:gsub("%.", "\\.") .. "' | head -1")
-    local partial_result = partial_check:read("*a")
-    partial_check:close()
-    
-    if partial_result and partial_result ~= "" then
-        local found_pkg = partial_result:match("^package:(.+)$")
-        if found_pkg then
-            io.write(colors.yellow .. "Found similar package: " .. found_pkg .. "\n" .. colors.reset)
-            io.write(colors.white .. "Use this instead? (y/n): " .. colors.reset)
-            local choice = io.read():lower()
-            if choice == "y" then
-                return found_pkg
-            end
-        end
-    end
-    
     return false
 end
 
@@ -325,7 +266,7 @@ local function select_packages(packages_list)
     if choice == "1" then
         return packages_list
     elseif choice == "2" then
-        io.write(colors.yellow .. "Enter package numbers (comma-separated, e.g., 1,2): " .. colors.reset)
+        io.write(colors.yellow .. "Enter package numbers (comma-separated): " .. colors.reset)
         local selection = io.read()
         local selected = {}
         for num in selection:gmatch("%d+") do
@@ -335,12 +276,10 @@ local function select_packages(packages_list)
             end
         end
         if #selected == 0 then
-            io.write(colors.red .. "No valid packages selected, using all packages\n" .. colors.reset)
             return packages_list
         end
         return selected
     else
-        io.write(colors.red .. "Invalid choice, using all packages\n" .. colors.reset)
         return packages_list
     end
 end
@@ -373,7 +312,7 @@ local function first_time_config()
     io.write(colors.green .. "\n=== FIRST TIME CONFIGURATION ===\n" .. colors.reset)
     
     io.write(colors.yellow .. "\nMethod for fetching Roblox packages:\n" .. colors.reset)
-    io.write("  1) " .. colors.green .. "Automatic (recommended)\n")
+    io.write("  1) " .. colors.green .. "Automatic\n")
     io.write("  2) " .. colors.cyan .. "Manual\n")
     io.write(colors.white .. "  Choose: " .. colors.reset)
     local method = io.read()
@@ -384,7 +323,7 @@ local function first_time_config()
         packages_list = find_roblox_packages()
         if not packages_list or #packages_list == 0 then
             io.write(colors.red .. "\nAutomatic detection failed.\n" .. colors.reset)
-            io.write(colors.yellow .. "Would you like to switch to manual mode? (y/n): " .. colors.reset)
+            io.write(colors.yellow .. "Switch to manual mode? (y/n): " .. colors.reset)
             local switch = io.read():lower()
             if switch == "y" then
                 method = "2"
@@ -399,7 +338,7 @@ local function first_time_config()
     if method == "2" then
         packages_list = {}
         io.write(colors.cyan .. "\nEnter Roblox package name(s):\n" .. colors.reset)
-        io.write(colors.gray .. "Examples: com.roblox.client, com.roblox.client2, com.roblox.clien\n" .. colors.reset)
+        io.write(colors.gray .. "Example: com.roblox.client\n" .. colors.reset)
         
         while true do
             io.write(colors.white .. "Package " .. (#packages_list + 1) .. ": " .. colors.reset)
@@ -407,32 +346,26 @@ local function first_time_config()
             
             if pkg_name == "" then
                 if #packages_list == 0 then
-                    io.write(colors.red .. "At least one package is required!\n" .. colors.reset)
+                    io.write(colors.red .. "At least one package required!\n" .. colors.reset)
                 else
                     break
                 end
             else
-                local verified = verify_package_exists(pkg_name)
-                if verified then
-                    if type(verified) == "string" then
-                        table.insert(packages_list, verified)
-                        io.write(colors.green .. "✓ Package added: " .. verified .. "\n" .. colors.reset)
-                    else
-                        table.insert(packages_list, pkg_name)
-                        io.write(colors.green .. "✓ Package added: " .. pkg_name .. "\n" .. colors.reset)
-                    end
+                if verify_package_exists(pkg_name) then
+                    table.insert(packages_list, pkg_name)
+                    io.write(colors.green .. "✓ Package added\n" .. colors.reset)
                 else
-                    io.write(colors.red .. "✗ Package not found: " .. pkg_name .. "\n" .. colors.reset)
-                    io.write(colors.yellow .. "Would you like to add it anyway? (y/n): " .. colors.reset)
+                    io.write(colors.red .. "✗ Package not found\n" .. colors.reset)
+                    io.write(colors.yellow .. "Add anyway? (y/n): " .. colors.reset)
                     local force = io.read():lower()
                     if force == "y" then
                         table.insert(packages_list, pkg_name)
-                        io.write(colors.yellow .. "✓ Package added (unverified): " .. pkg_name .. "\n" .. colors.reset)
+                        io.write(colors.yellow .. "✓ Added unverified\n" .. colors.reset)
                     end
                 end
             end
             
-            io.write(colors.white .. "Add another package? (y/n): " .. colors.reset)
+            io.write(colors.white .. "Add another? (y/n): " .. colors.reset)
             local add_more = io.read():lower()
             if add_more ~= "y" then
                 break
@@ -456,7 +389,7 @@ local function first_time_config()
     local game_url = io.read()
     
     if not game_url or game_url == "" then
-        io.write(colors.red .. "Game URL is required!\n" .. colors.reset)
+        io.write(colors.red .. "URL required!\n" .. colors.reset)
         io.write(colors.white .. "Press Enter to continue..." .. colors.reset)
         io.read()
         return false
@@ -486,8 +419,8 @@ local function first_time_config()
         local interval_min = tonumber(io.read()) or 60
         
         io.write(colors.yellow .. "Restart type:\n" .. colors.reset)
-        io.write("  1) " .. colors.green .. "Game restart (full package restart)\n")
-        io.write("  2) " .. colors.cyan .. "Server rejoin (rejoin game)\n")
+        io.write("  1) " .. colors.green .. "Game restart\n")
+        io.write("  2) " .. colors.cyan .. "Server rejoin\n")
         io.write(colors.white .. "  Choose: " .. colors.reset)
         local type_choice = io.read()
         
@@ -507,30 +440,16 @@ local function first_time_config()
         version = "1.0"
     }
     
-    -- Debug: Show what we're about to save
-    io.write(colors.gray .. "\nSaving configuration...\n" .. colors.reset)
-    
     if save_config(config) then
         clear_screen()
         print_banner()
-        io.write(colors.green .. "\n✅ Configuration completed successfully!\n" .. colors.reset)
-        io.write(colors.cyan .. "\nConfigured packages:\n" .. colors.reset)
-        for i, pkg in ipairs(selected_packages) do
-            io.write(string.format("  %d) %s%s%s\n", i, colors.yellow, pkg, colors.reset))
-        end
-        io.write(colors.green .. "\nGame URL: " .. colors.cyan .. game_url .. colors.reset .. "\n")
-        io.write(colors.white .. "\nPress Enter to return to main menu..." .. colors.reset)
+        io.write(colors.green .. "\n✅ Configuration completed!\n" .. colors.reset)
+        io.write(colors.white .. "\nPress Enter to return..." .. colors.reset)
         io.read()
         return true
     else
         io.write(colors.red .. "\n❌ Failed to save configuration!\n" .. colors.reset)
-        io.write(colors.yellow .. "Checking directory permissions...\n" .. colors.reset)
-        
-        -- Diagnostic info
-        local home = os.getenv("HOME")
-        os.execute("ls -la " .. home .. "/NOKA/ 2>&1")
-        
-        io.write(colors.white .. "\nPress Enter to continue..." .. colors.reset)
+        io.write(colors.white .. "Press Enter to continue..." .. colors.reset)
         io.read()
         return false
     end
@@ -591,8 +510,8 @@ local function start_auto_rejoin()
     if not config or not config.packages or #config.packages == 0 then
         clear_screen()
         print_banner()
-        io.write(colors.red .. "\n❌ No configuration found! Please run first-time configuration first.\n" .. colors.reset)
-        io.write(colors.white .. "Press Enter to return to main menu..." .. colors.reset)
+        io.write(colors.red .. "\n❌ No configuration found!\n" .. colors.reset)
+        io.write(colors.white .. "Press Enter to return..." .. colors.reset)
         io.read()
         return
     end
@@ -637,8 +556,7 @@ local function start_auto_rejoin()
         else
             package_states[pkg].status = "failed"
             update_dashboard_line(package_states[pkg].line_num,
-                string.format("  %s%-30s%s %sFailed to launch%s", colors.cyan, pkg, colors.reset, colors.red, colors.reset))
-            log("Failed to launch " .. pkg, "ERROR")
+                string.format("  %s%-30s%s %sFailed%s", colors.cyan, pkg, colors.reset, colors.red, colors.reset))
         end
     end
     
@@ -703,10 +621,8 @@ local function start_auto_rejoin()
                         if launch_package(pkg, config.game_url) then
                             state.launch_time = os.time()
                             state.status = "launching"
-                            log(pkg .. " restarted successfully", "INFO")
                         else
                             state.status = "crashed"
-                            log(pkg .. " failed to restart", "ERROR")
                         end
                         state.last_action = os.time()
                     end
@@ -714,7 +630,6 @@ local function start_auto_rejoin()
                     if state.status ~= "ingame" then
                         state.status = "ingame"
                         state.launch_time = current_time
-                        log(pkg .. " is now in-game", "INFO")
                     end
                 end
             end
@@ -738,8 +653,6 @@ local function start_auto_rejoin()
             for pkg, state in pairs(package_states) do
                 if state.status == "ingame" and (current_time - state.launch_time) >= config.restart.interval then
                     state.status = "restarting"
-                    update_dashboard_line(state.line_num,
-                        string.format("  %s%-30s%s %sRESTARTING (interval)%s", colors.cyan, pkg, colors.reset, colors.magenta, colors.reset))
                     
                     if config.restart.type == "game" then
                         os.execute("am force-stop " .. pkg .. " 2>/dev/null")
@@ -749,7 +662,6 @@ local function start_auto_rejoin()
                     if launch_package(pkg, config.game_url) then
                         state.launch_time = os.time()
                         state.status = "ingame"
-                        log(pkg .. " restarted due to interval", "INFO")
                     end
                     state.last_action = os.time()
                 end
@@ -766,7 +678,7 @@ local function webhook_config()
     io.write(colors.green .. "\n=== WEBHOOK CONFIGURATION ===\n" .. colors.reset)
     
     if config and config.webhook then
-        io.write(colors.cyan .. "Current webhook status: " .. (config.webhook.enabled and "Enabled" or "Disabled") .. "\n" .. colors.reset)
+        io.write(colors.cyan .. "Current status: " .. (config.webhook.enabled and "Enabled" or "Disabled") .. "\n" .. colors.reset)
         if config.webhook.enabled then
             io.write("  URL: " .. config.webhook.url .. "\n")
             io.write("  Interval: " .. config.webhook.interval .. " seconds\n")
@@ -778,15 +690,15 @@ local function webhook_config()
     if config then
         config.webhook = new_webhook
         if save_config(config) then
-            io.write(colors.green .. "\n✅ Webhook configuration updated!\n" .. colors.reset)
+            io.write(colors.green .. "\n✅ Updated!\n" .. colors.reset)
         else
-            io.write(colors.red .. "\n❌ Failed to save webhook configuration!\n" .. colors.reset)
+            io.write(colors.red .. "\n❌ Failed to save!\n" .. colors.reset)
         end
     else
-        io.write(colors.red .. "\n❌ No configuration loaded. Please run first-time configuration first.\n" .. colors.reset)
+        io.write(colors.red .. "\n❌ No config loaded!\n" .. colors.reset)
     end
     
-    io.write(colors.white .. "\nPress Enter to return to main menu..." .. colors.reset)
+    io.write(colors.white .. "\nPress Enter to return..." .. colors.reset)
     io.read()
 end
 
@@ -796,28 +708,26 @@ local function update_url()
     io.write(colors.green .. "\n=== UPDATE GAME URL ===\n" .. colors.reset)
     
     if not config then
-        io.write(colors.red .. "\n❌ No configuration loaded. Please run first-time configuration first.\n" .. colors.reset)
-        io.write(colors.white .. "Press Enter to return to main menu..." .. colors.reset)
+        io.write(colors.red .. "\n❌ No config loaded!\n" .. colors.reset)
+        io.write(colors.white .. "Press Enter to return..." .. colors.reset)
         io.read()
         return
     end
     
     io.write(colors.cyan .. "Current URL: " .. config.game_url .. "\n" .. colors.reset)
-    io.write(colors.cyan .. "Enter new Roblox game URL: " .. colors.reset)
+    io.write(colors.cyan .. "Enter new URL: " .. colors.reset)
     local new_url = io.read()
     
     if new_url and new_url ~= "" then
         config.game_url = new_url
         if save_config(config) then
-            io.write(colors.green .. "\n✅ URL updated successfully!\n" .. colors.reset)
+            io.write(colors.green .. "\n✅ URL updated!\n" .. colors.reset)
         else
-            io.write(colors.red .. "\n❌ Failed to save URL!\n" .. colors.reset)
+            io.write(colors.red .. "\n❌ Failed to save!\n" .. colors.reset)
         end
-    else
-        io.write(colors.red .. "\n❌ Invalid URL. No changes made.\n" .. colors.reset)
     end
     
-    io.write(colors.white .. "\nPress Enter to return to main menu..." .. colors.reset)
+    io.write(colors.white .. "\nPress Enter to return..." .. colors.reset)
     io.read()
 end
 
@@ -832,47 +742,37 @@ local function export_import_config()
     local choice = io.read()
     
     if choice == "1" then
-        io.write(colors.cyan .. "Enter export path (default: ~/NOKA/config_export.json): " .. colors.reset)
+        io.write(colors.cyan .. "Export path: " .. colors.reset)
         local export_path = io.read()
         if export_path == "" then
             export_path = os.getenv("HOME") .. "/NOKA/config_export.json"
         end
         
-        local cmd = "cp " .. CONFIG_PATH .. " " .. export_path .. " 2>/dev/null"
-        local result = os.execute(cmd)
-        if result then
-            io.write(colors.green .. "\n✅ Config exported to: " .. export_path .. "\n" .. colors.reset)
-        else
-            io.write(colors.red .. "\n❌ Failed to export config!\n" .. colors.reset)
-        end
+        os.execute("cp " .. CONFIG_PATH .. " " .. export_path .. " 2>/dev/null")
+        io.write(colors.green .. "\n✅ Exported to: " .. export_path .. "\n" .. colors.reset)
         
     elseif choice == "2" then
-        io.write(colors.cyan .. "Enter import file path: " .. colors.reset)
+        io.write(colors.cyan .. "Import path: " .. colors.reset)
         local import_path = io.read()
         
         local file = io.open(import_path, "r")
         if file then
             file:close()
-            local cmd = "cp " .. import_path .. " " .. CONFIG_PATH .. " 2>/dev/null"
-            local result = os.execute(cmd)
-            if result then
-                config = load_config()
-                io.write(colors.green .. "\n✅ Config imported successfully!\n" .. colors.reset)
-            else
-                io.write(colors.red .. "\n❌ Failed to import config!\n" .. colors.reset)
-            end
+            os.execute("cp " .. import_path .. " " .. CONFIG_PATH .. " 2>/dev/null")
+            config = load_config()
+            io.write(colors.green .. "\n✅ Imported successfully!\n" .. colors.reset)
         else
-            io.write(colors.red .. "\n❌ File not found: " .. import_path .. "\n" .. colors.reset)
+            io.write(colors.red .. "\n❌ File not found!\n" .. colors.reset)
         end
     end
     
-    io.write(colors.white .. "\nPress Enter to return to main menu..." .. colors.reset)
+    io.write(colors.white .. "\nPress Enter to return..." .. colors.reset)
     io.read()
 end
 
 local function exit_tool()
     clear_screen()
-    io.write(colors.green .. "\nThank you for using NOKA Auto-Rejoin Manager!\n" .. colors.reset)
+    io.write(colors.green .. "\nThank you for using NOKA!\n" .. colors.reset)
     io.write(colors.cyan .. "Goodbye!\n\n" .. colors.reset)
     running = false
     os.exit(0)
@@ -880,13 +780,9 @@ end
 
 -- Main program
 local function main()
-    -- Create directories first
     ensure_directories()
-    
-    -- Load existing config
     config = load_config()
     
-    -- Main menu loop
     while true do
         clear_screen()
         print_banner()
@@ -908,7 +804,8 @@ local function main()
         elseif choice == "6" then
             exit_tool()
         else
-            io.write(colors.red .. "\nInvalid option. Press Enter to continue..." .. colors.reset)
+            io.write(colors.red .. "\nInvalid option!\n" .. colors.reset)
+            io.write(colors.white .. "Press Enter..." .. colors.reset)
             io.read()
         end
     end
