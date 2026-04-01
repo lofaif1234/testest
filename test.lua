@@ -29,6 +29,18 @@ local function SLEEP(n)
     os.execute("sleep " .. tonumber(n))
 end
 
+local function FIX_TTY()
+    os.execute("stty sane 2>/dev/null")
+end
+
+local function PROMPT(msg)
+    FIX_TTY()
+    io.write(msg)
+    io.flush()
+    local res = io.read("*l") or ""
+    return res:gsub("^%s*(.-)%s*$", "%1")
+end
+
 -- Root shell wrapper
 local function SH(cmd)
     local ok, res = pcall(function()
@@ -336,23 +348,22 @@ local function SETUP()
     OUT(" 1) automatic")
     OUT(" 2) manual")
     OUT(C.BLUE .. " ────────────────────────────────────────────────────────────" .. C.RESET)
-    io.write(C.CYAN.." Select: "..C.RESET); local mode = io.read()
+    local mode = PROMPT(C.CYAN.." Select: "..C.RESET)
     
     local found = {}
     if mode == "1" then
         local list = SH("pm list packages | grep roblox")
         for p in list:gmatch("package:([%w%.%-]+)") do found[#found+1] = p end
     else
-        io.write(C.YELLOW.." Packages: "..C.RESET)
-        local raw = io.read()
+        local raw = PROMPT(C.YELLOW.." Packages: "..C.RESET)
         for p in raw:gmatch("([^,]+)") do found[#found+1] = p:gsub("%s+", "") end
     end
     if #found == 0 then OUT(C.RED.."No packages!"); return end
     OUT("\nDetected:")
     for i, p in ipairs(found) do OUT(string.format(" %d) %s", i, p)) end
-    io.write(C.CYAN.."\n URL / ID / Private (PID:CODE): "..C.RESET); local url = io.read()
-    io.write(C.CYAN.." Delay (30): "..C.RESET); local delay = tonumber(io.read()) or 30
-    io.write(C.CYAN.." Executor Path: "..C.RESET); local base_path = io.read()
+    local url = PROMPT(C.CYAN.."\n URL / ID / Private (PID:CODE): "..C.RESET)
+    local delay = tonumber(PROMPT(C.CYAN.." Delay (30): "..C.RESET)) or 30
+    local base_path = PROMPT(C.CYAN.." Executor Path: "..C.RESET)
     for _, pkg in ipairs(found) do
         local exec = base_path.."/"..pkg.."/autoexecute"; SH("mkdir -p "..exec)
         local raw = string.format('_G.NOKA_PKG="%s";loadstring(game:HttpGet("https://raw.githubusercontent.com/lofaif1234/noka/refs/heads/main/noka-script.lua"))()', pkg)
@@ -369,7 +380,7 @@ local function MAIN()
         OUT(" 2) Run Auto-rejoin")
         OUT(" 9) Exit")
         OUT(C.BLUE .. " ────────────────────────────────────────────────────────────" .. C.RESET)
-        io.write(C.CYAN .. " Select: " .. C.RESET); local c = io.read()
+        local c = PROMPT(C.CYAN .. " Select: " .. C.RESET)
         if c == "1" then SETUP() elseif c == "2" then START_REJOIN() elseif c == "9" then break end
     end
 end
