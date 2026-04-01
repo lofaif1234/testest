@@ -2,7 +2,7 @@
 
 --[[
 NOKA.lua - Roblox Auto-Rejoin Manager for Termux
-Version: 1.0.0
+Version: 1.1.0 (Improved Public & Private Server Join Logic)
 --]]
 
 -- Configuration
@@ -31,7 +31,7 @@ local colors = {
 local config = nil
 local running = false
 
--- Simple JSON encoder/decoder (Fixed)
+-- Simple JSON encoder/decoder
 local json = {}
 
 function json.encode_table(t, indent)
@@ -39,7 +39,7 @@ function json.encode_table(t, indent)
     local result = {}
     local is_array = true
     local i = 1
-    
+   
     for k, v in pairs(t) do
         if type(k) ~= "number" or k ~= i then
             is_array = false
@@ -47,12 +47,12 @@ function json.encode_table(t, indent)
         end
         i = i + 1
     end
-    
+   
     if is_array then
         result[#result+1] = "["
         for k, v in ipairs(t) do
             if k > 1 then result[#result+1] = "," end
-            result[#result+1] = json.encode_value(v, indent .. "  ")
+            result[#result+1] = json.encode_value(v, indent .. " ")
         end
         result[#result+1] = "]"
     else
@@ -60,12 +60,12 @@ function json.encode_table(t, indent)
         local first = true
         for k, v in pairs(t) do
             if not first then result[#result+1] = "," end
-            result[#result+1] = string.format('%s  "%s": %s', indent, k, json.encode_value(v, indent .. "  "))
+            result[#result+1] = string.format('%s "%s": %s', indent, k, json.encode_value(v, indent .. " "))
             first = false
         end
         result[#result+1] = indent .. "}"
     end
-    
+   
     return table.concat(result)
 end
 
@@ -92,23 +92,19 @@ function json.decode(str)
     if not str or str == "" then
         return nil
     end
-    
-    -- Remove whitespace and newlines for safer parsing
+   
     str = str:gsub("[\n\r\t]", " ")
-    
-    -- Create a safe Lua table from JSON string
+   
     local function parse_value(pos)
         pos = pos or 1
         local ch = str:sub(pos, pos)
-        
-        -- Skip whitespace
+       
         while ch and ch:match("%s") do
             pos = pos + 1
             ch = str:sub(pos, pos)
         end
-        
+       
         if ch == '"' then
-            -- Parse string
             local start = pos + 1
             local end_pos = start
             while end_pos <= #str do
@@ -120,43 +116,31 @@ function json.decode(str)
             local value = str:sub(start, end_pos - 1)
             return value, end_pos + 1
         elseif ch == '{' then
-            -- Parse object
             local obj = {}
             pos = pos + 1
             while true do
-                -- Skip whitespace
                 local next_ch = str:sub(pos, pos)
                 while next_ch and next_ch:match("%s") do
                     pos = pos + 1
                     next_ch = str:sub(pos, pos)
                 end
-                
+               
                 if next_ch == '}' then
                     pos = pos + 1
                     break
                 end
-                
-                -- Parse key
+               
                 local key, new_pos = parse_value(pos)
                 pos = new_pos
-                
-                -- Skip to colon
-                while str:sub(pos, pos):match("%s") do
-                    pos = pos + 1
-                end
-                if str:sub(pos, pos) == ':' then
-                    pos = pos + 1
-                end
-                
-                -- Parse value
+               
+                while str:sub(pos, pos):match("%s") do pos = pos + 1 end
+                if str:sub(pos, pos) == ':' then pos = pos + 1 end
+               
                 local val, new_pos = parse_value(pos)
                 pos = new_pos
                 obj[key] = val
-                
-                -- Skip to comma or end
-                while str:sub(pos, pos):match("%s") do
-                    pos = pos + 1
-                end
+               
+                while str:sub(pos, pos):match("%s") do pos = pos + 1 end
                 if str:sub(pos, pos) == ',' then
                     pos = pos + 1
                 elseif str:sub(pos, pos) == '}' then
@@ -166,33 +150,27 @@ function json.decode(str)
             end
             return obj, pos
         elseif ch == '[' then
-            -- Parse array
             local arr = {}
             pos = pos + 1
             local index = 1
             while true do
-                -- Skip whitespace
                 local next_ch = str:sub(pos, pos)
                 while next_ch and next_ch:match("%s") do
                     pos = pos + 1
                     next_ch = str:sub(pos, pos)
                 end
-                
+               
                 if next_ch == ']' then
                     pos = pos + 1
                     break
                 end
-                
-                -- Parse value
+               
                 local val, new_pos = parse_value(pos)
                 pos = new_pos
                 arr[index] = val
                 index = index + 1
-                
-                -- Skip to comma or end
-                while str:sub(pos, pos):match("%s") do
-                    pos = pos + 1
-                end
+               
+                while str:sub(pos, pos):match("%s") do pos = pos + 1 end
                 if str:sub(pos, pos) == ',' then
                     pos = pos + 1
                 elseif str:sub(pos, pos) == ']' then
@@ -202,7 +180,6 @@ function json.decode(str)
             end
             return arr, pos
         elseif ch:match("%d") or ch == '-' then
-            -- Parse number
             local start = pos
             while pos <= #str and (str:sub(pos, pos):match("[%d%.%-]")) do
                 pos = pos + 1
@@ -220,7 +197,7 @@ function json.decode(str)
             return nil, pos
         end
     end
-    
+   
     local result, _ = parse_value(1)
     return result
 end
@@ -244,80 +221,122 @@ local function ensure_directories()
     os.execute("chmod 755 " .. home .. "/NOKA 2>/dev/null")
 end
 
+-- ====================== NEW SERVER JOIN LOGIC ======================
+local function RESOLVE_LINK(url)
+    if url:match("^https?://") then
+        return url
+    end
+    if url:match("^roblox://") then
+        return url
+    end
+    -- Private Server: PLACEID:CODE
+    local pid, code = url:match("^(%d+):([%w%-]+)$")
+    if pid and code then
+        return string.format("roblox://placeId=%s&accessCode=%s", pid, code)
+    end
+    -- Bare Place ID
+    local bare_id = url:match("^(%d+)$")
+    if bare_id then
+        return "roblox://placeId=" .. bare_id
+    end
+    -- Extract from /games/ link
+    local game_id = url:match("/games/(%d+)")
+    if game_id then
+        return "roblox://placeId=" .. game_id
+    end
+    return "roblox://placeId=" .. url
+end
+
+local function JOIN_SERVER(package, raw_input)
+    local deep_link = RESOLVE_LINK(raw_input)
+   
+    local activity = "com.roblox.client.ActivityProtocolLaunch"
+   
+    local cmd = string.format('am start -n %s/%s -a android.intent.action.VIEW -d "%s"', 
+                              package, activity, deep_link)
+   
+    log("Joining server with command: " .. cmd, "DEBUG")
+    -- Execute under root
+    local success = os.execute("su -c '" .. cmd .. "' 2>/dev/null")
+    return success == 0 or success == true
+end
+
+-- Updated launch function (now uses new logic)
+local function launch_package(package_name, game_url)
+    return JOIN_SERVER(package_name, game_url)
+end
+
 local function load_config()
     ensure_directories()
-    
-    -- Check if config file exists
+   
     local file = io.open(CONFIG_PATH, "r")
     if not file then
         log("No config file found", "INFO")
         return nil
     end
-    
+   
     local content = file:read("*all")
     file:close()
-    
+   
     if not content or content == "" then
         log("Config file is empty", "INFO")
         return nil
     end
-    
-    -- Debug: Print config content
+   
     log("Loading config: " .. content:sub(1, 100), "DEBUG")
-    
+   
     local success, result = pcall(function()
         return json.decode(content)
     end)
-    
+   
     if not success then
         log("Failed to parse config.json: " .. tostring(result), "ERROR")
         return nil
     end
-    
+   
     if not result then
         log("Config decoded to nil", "ERROR")
         return nil
     end
-    
-    -- Validate required fields
+   
     if not result.packages or not result.game_url then
         log("Config missing required fields", "ERROR")
         return nil
     end
-    
+   
     log("Config loaded successfully with " .. #result.packages .. " packages", "INFO")
     return result
 end
 
 local function save_config(cfg)
     ensure_directories()
-    
+   
     if not cfg then
         log("Attempted to save nil config", "ERROR")
         return false
     end
-    
+   
     local file = io.open(CONFIG_PATH, "w")
     if not file then
         log("Failed to open config.json for writing", "ERROR")
         return false
     end
-    
+   
     local success, json_str = pcall(function()
         return json.encode(cfg)
     end)
-    
+   
     if not success then
         log("Failed to encode config to JSON: " .. tostring(json_str), "ERROR")
         file:close()
         return false
     end
-    
+   
     file:write(json_str)
     file:close()
     os.execute("chmod 644 " .. CONFIG_PATH .. " 2>/dev/null")
-    
-    log("Configuration saved successfully: " .. json_str:sub(1, 100), "INFO")
+   
+    log("Configuration saved successfully", "INFO")
     return true
 end
 
@@ -337,7 +356,7 @@ local function print_banner()
 ║    ██║ ╚████║╚██████╔╝██║  ██╗██║  ██║                    ║
 ║    ╚═╝  ╚═══╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝                    ║
 ║                                                           ║
-║           ROBLOX AUTO-REJOIN MANAGER v1.0                ║
+║           ROBLOX AUTO-REJOIN MANAGER v1.1.0               ║
 ╚═══════════════════════════════════════════════════════════╝
 ]] .. colors.reset)
 end
@@ -368,24 +387,24 @@ end
 
 local function find_roblox_packages()
     io.write(colors.yellow .. "\nScanning for Roblox packages...\n" .. colors.reset)
-    
+   
     local all_packages = {}
     local handle = io.popen("pm list packages 2>/dev/null")
     if not handle then
         io.write(colors.red .. "Failed to run pm command.\n" .. colors.reset)
         return nil
     end
-    
+   
     local all_output = handle:read("*a")
     handle:close()
-    
+   
     for line in all_output:gmatch("[^\r\n]+") do
         local pkg = line:match("^package:(.+)$")
         if pkg and (pkg:lower():match("roblox") or pkg:lower():match("rblx")) then
             table.insert(all_packages, pkg)
         end
     end
-    
+   
     if #all_packages > 0 then
         io.write(colors.green .. "\nFound " .. #all_packages .. " Roblox package(s):\n" .. colors.reset)
         for i, pkg in ipairs(all_packages) do
@@ -402,17 +421,17 @@ local function verify_package_exists(package_name)
     if not package_name or package_name == "" then
         return false
     end
-    
+   
     package_name = package_name:gsub("^%s+", ""):gsub("%s+$", "")
-    
+   
     local check = io.popen("pm list packages | grep -q '" .. package_name .. "' && echo 'found'")
     local result = check:read("*a")
     check:close()
-    
+   
     if result and result:match("found") then
         return true
     end
-    
+   
     return false
 end
 
@@ -421,10 +440,10 @@ local function select_packages(packages_list)
     io.write("  1) " .. colors.green .. "All packages\n" .. colors.reset)
     io.write("  2) " .. colors.cyan .. "Manual selection\n" .. colors.reset)
     io.write(colors.white .. "  Choose: " .. colors.reset)
-    
+   
     local choice = io.read()
     choice = choice and choice:gsub("^%s+", ""):gsub("%s+$", "") or ""
-    
+   
     if choice == "1" then
         return packages_list
     elseif choice == "2" then
@@ -451,13 +470,13 @@ local function configure_webhook()
     io.write(colors.yellow .. "\nEnable Discord webhook? (1=Yes, 2=No): " .. colors.reset)
     local enable = io.read()
     enable = enable and enable:gsub("^%s+", ""):gsub("%s+$", "") or ""
-    
+   
     if enable == "1" then
         local url = get_input("Enter Discord webhook URL: ")
         io.write(colors.cyan .. "Enter message interval (seconds, min 30): " .. colors.reset)
         local interval = tonumber(io.read()) or 60
         if interval < 30 then interval = 30 end
-        
+       
         return {
             enabled = true,
             url = url,
@@ -465,7 +484,7 @@ local function configure_webhook()
             last_sent = 0
         }
     end
-    
+   
     return { enabled = false }
 end
 
@@ -473,16 +492,16 @@ local function first_time_config()
     clear_screen()
     print_banner()
     io.write(colors.green .. "\n=== FIRST TIME CONFIGURATION ===\n" .. colors.reset)
-    
+   
     io.write(colors.yellow .. "\nMethod for fetching Roblox packages:\n" .. colors.reset)
     io.write("  1) " .. colors.green .. "Automatic\n")
     io.write("  2) " .. colors.cyan .. "Manual\n")
     io.write(colors.white .. "  Choose: " .. colors.reset)
     local method = io.read()
     method = method and method:gsub("^%s+", ""):gsub("%s+$", "") or ""
-    
+   
     local packages_list = nil
-    
+   
     if method == "1" then
         packages_list = find_roblox_packages()
         if not packages_list or #packages_list == 0 then
@@ -499,19 +518,19 @@ local function first_time_config()
             end
         end
     end
-    
+   
     if method == "2" then
         packages_list = {}
         io.write(colors.cyan .. "\nEnter Roblox package name(s):\n" .. colors.reset)
         io.write(colors.gray .. "Example: com.roblox.client\n" .. colors.reset)
-        
+       
         while true do
             io.write(colors.white .. "Package " .. (#packages_list + 1) .. ": " .. colors.reset)
             local pkg_name = io.read()
             if pkg_name then
                 pkg_name = pkg_name:gsub("^%s+", ""):gsub("%s+$", "")
             end
-            
+           
             if not pkg_name or pkg_name == "" then
                 if #packages_list == 0 then
                     io.write(colors.red .. "At least one package required!\n" .. colors.reset)
@@ -533,7 +552,7 @@ local function first_time_config()
                     end
                 end
             end
-            
+           
             io.write(colors.white .. "Add another? (y/n): " .. colors.reset)
             local add_more = io.read()
             add_more = add_more and add_more:lower():gsub("^%s+", ""):gsub("%s+$", "") or ""
@@ -542,78 +561,78 @@ local function first_time_config()
             end
         end
     end
-    
+   
     if not packages_list or #packages_list == 0 then
         io.write(colors.red .. "\nNo packages selected!\n" .. colors.reset)
         io.write(colors.white .. "Press Enter to continue..." .. colors.reset)
         io.read()
         return false
     end
-    
+   
     local selected_packages = packages_list
     if #packages_list > 1 then
         selected_packages = select_packages(packages_list)
     end
-    
+   
     local game_url = get_input("\nEnter Roblox game URL: ")
-    
+   
     if not game_url or game_url == "" then
         io.write(colors.red .. "URL required!\n" .. colors.reset)
         io.write(colors.white .. "Press Enter to continue..." .. colors.reset)
         io.read()
         return false
     end
-    
+   
     local webhook = configure_webhook()
-    
+   
     io.write(colors.yellow .. "\nStart interval between packages:\n" .. colors.reset)
     io.write("  1) " .. colors.green .. "Custom\n")
     io.write("  2) " .. colors.cyan .. "Default (120 seconds)\n")
     io.write(colors.white .. "  Choose: " .. colors.reset)
     local interval_choice = io.read()
     interval_choice = interval_choice and interval_choice:gsub("^%s+", ""):gsub("%s+$", "") or ""
-    
+   
     local start_interval = 120
     if interval_choice == "1" then
         io.write(colors.cyan .. "Enter interval (seconds): " .. colors.reset)
         start_interval = tonumber(io.read()) or 120
         if start_interval < 1 then start_interval = 1 end
     end
-    
+   
     io.write(colors.yellow .. "\nEnable auto-restart? (1=Yes, 2=No): " .. colors.reset)
     local restart_enabled = io.read()
     restart_enabled = restart_enabled and restart_enabled:gsub("^%s+", ""):gsub("%s+$", "") or ""
-    
+   
     local restart_config = { enabled = false }
     if restart_enabled == "1" then
         io.write(colors.cyan .. "Restart interval (minutes): " .. colors.reset)
         local interval_min = tonumber(io.read()) or 60
-        
+       
         io.write(colors.yellow .. "Restart type:\n" .. colors.reset)
         io.write("  1) " .. colors.green .. "Game restart\n")
         io.write("  2) " .. colors.cyan .. "Server rejoin\n")
         io.write(colors.white .. "  Choose: " .. colors.reset)
         local type_choice = io.read()
         type_choice = type_choice and type_choice:gsub("^%s+", ""):gsub("%s+$", "") or ""
-        
+       
         restart_config = {
             enabled = true,
             interval = interval_min * 60,
             type = type_choice == "1" and "game" or "rejoin"
         }
     end
-    
+   
     config = {
         packages = selected_packages,
         game_url = game_url,
         webhook = webhook,
         start_interval = start_interval,
         restart = restart_config,
-        version = "1.0"
+        version = "1.1"
     }
-    
+   
     io.write(colors.yellow .. "\nSaving configuration...\n" .. colors.reset)
-    
+   
     if save_config(config) then
         clear_screen()
         print_banner()
@@ -634,21 +653,15 @@ local function first_time_config()
     end
 end
 
-local function launch_package(package_name, game_url)
-    local intent = "am start -a android.intent.action.VIEW -d '" .. game_url .. "' " .. package_name
-    local result = os.execute(intent .. " > /dev/null 2>&1")
-    return result == 0
-end
-
 local function check_package_status(package_name)
     local check = io.popen("pidof " .. package_name .. " 2>/dev/null")
     local pid = check:read("*a"):gsub("%s+", "")
     check:close()
-    
+   
     if pid == "" then
         return "crashed"
     end
-    
+   
     local heartbeat_file = HEARTBEAT_DIR .. package_name:gsub("%.", "_") .. ".heartbeat"
     local file = io.open(heartbeat_file, "r")
     if file then
@@ -658,7 +671,7 @@ local function check_package_status(package_name)
             return "ingame"
         end
     end
-    
+   
     return "running"
 end
 
@@ -666,12 +679,12 @@ local function send_webhook(status_data)
     if not config or not config.webhook or not config.webhook.enabled then
         return
     end
-    
+   
     local screenshot_path = os.getenv("HOME") .. "/NOKA/screenshot.png"
     os.execute("screencap -p " .. screenshot_path .. " 2>/dev/null")
-    
+   
     log("Webhook would be sent to: " .. config.webhook.url, "INFO")
-    
+   
     config.webhook.last_sent = os.time()
     save_config(config)
 end
@@ -686,9 +699,8 @@ local function update_dashboard_line(line_num, content)
 end
 
 local function start_auto_rejoin()
-    -- Force reload config before starting
     config = load_config()
-    
+   
     if not config then
         clear_screen()
         print_banner()
@@ -698,35 +710,35 @@ local function start_auto_rejoin()
         io.read()
         return
     end
-    
+   
     if not config.packages or #config.packages == 0 then
         clear_screen()
         print_banner()
         io.write(colors.red .. "\n❌ No packages configured!\n" .. colors.reset)
-        io.write(colors.yellow .. "Please run option 1 (First time configuration) first.\n" .. colors.reset)
+        io.write(colors.yellow .. "Please run option 1 first.\n" .. colors.reset)
         io.write(colors.white .. "\nPress Enter to return..." .. colors.reset)
         io.read()
         return
     end
-    
+   
     if not config.game_url or config.game_url == "" then
         clear_screen()
         print_banner()
         io.write(colors.red .. "\n❌ No game URL configured!\n" .. colors.reset)
-        io.write(colors.yellow .. "Please run option 1 (First time configuration) or option 4 to update URL.\n" .. colors.reset)
+        io.write(colors.yellow .. "Please run option 1 or 4 to update URL.\n" .. colors.reset)
         io.write(colors.white .. "\nPress Enter to return..." .. colors.reset)
         io.read()
         return
     end
-    
+   
     clear_screen()
     print_banner()
-    io.write(colors.green .. "\n=== AUTO-REJOIN ACTIVE ===\n" .. colors.reset)
+    io.write(colors.green .. "\n=== AUTO-REJOIN ACTIVE (New Join Logic) ===\n" .. colors.reset)
     io.write(colors.cyan .. "Game URL: " .. config.game_url .. "\n" .. colors.reset)
     io.write(colors.yellow .. "Press Ctrl+C to stop\n\n" .. colors.reset)
-    
+   
     local package_states = {}
-    
+   
     for i, pkg in ipairs(config.packages) do
         package_states[pkg] = {
             status = "pending",
@@ -738,23 +750,23 @@ local function start_auto_rejoin()
         io.write(string.format("  %s%s%s - %sPending%s\n", colors.cyan, pkg, colors.reset, colors.yellow, colors.reset))
     end
     io.write("\n")
-    
+   
     local function launch_next_package(index)
         if index > #config.packages then
             return
         end
-        
+       
         local pkg = config.packages[index]
-        update_dashboard_line(package_states[pkg].line_num, 
+        update_dashboard_line(package_states[pkg].line_num,
             string.format("  %s%-30s%s %sLaunching...%s", colors.cyan, pkg, colors.reset, colors.yellow, colors.reset))
-        
+       
         if launch_package(pkg, config.game_url) then
             package_states[pkg].status = "launching"
             package_states[pkg].last_action = os.time()
             package_states[pkg].launch_time = os.time()
-            
+           
             if index < #config.packages then
-                os.execute("sleep " .. config.start_interval)
+                os.execute("sleep " .. (config.start_interval or 120))
                 launch_next_package(index + 1)
             end
         else
@@ -763,21 +775,21 @@ local function start_auto_rejoin()
                 string.format("  %s%-30s%s %sFailed%s", colors.cyan, pkg, colors.reset, colors.red, colors.reset))
         end
     end
-    
+   
     launch_next_package(1)
-    
+   
     running = true
     local last_webhook = 0
     local last_heartbeat_check = 0
-    
+   
     while running do
         local current_time = os.time()
-        
+       
         for pkg, state in pairs(package_states) do
             if state.status == "ingame" then
                 state.uptime = current_time - state.launch_time
             end
-            
+           
             local status_color = colors.green
             local status_text_display = "INGAME"
             if state.status == "crashed" then
@@ -796,36 +808,36 @@ local function start_auto_rejoin()
                 status_color = colors.red
                 status_text_display = "FAILED"
             end
-            
+           
             local status_text = string.format(
                 "  %s%-30s%s  %s%-10s%s  %s%-8s%s",
                 colors.cyan, pkg:sub(1, 30), colors.reset,
                 status_color, status_text_display, colors.reset,
                 colors.white, state.uptime .. "s", colors.reset
             )
-            
+           
             update_dashboard_line(state.line_num, status_text)
         end
-        
+       
         if current_time - last_heartbeat_check >= 5 then
             for pkg, state in pairs(package_states) do
                 if state.status ~= "failed" and state.status ~= "pending" then
                     local status = check_package_status(pkg)
-                    
+                   
                     if status == "crashed" and state.status ~= "crashed" and state.status ~= "restarting" then
                         state.status = "crashed"
                         log(pkg .. " has crashed", "WARN")
-                        
-                        if config.restart.enabled then
+                       
+                        if config.restart and config.restart.enabled then
                             state.status = "restarting"
                             update_dashboard_line(state.line_num,
                                 string.format("  %s%-30s%s %sRESTARTING...%s", colors.cyan, pkg, colors.reset, colors.magenta, colors.reset))
-                            
+                           
                             if config.restart.type == "game" then
                                 os.execute("am force-stop " .. pkg .. " 2>/dev/null")
                                 os.execute("sleep 3")
                             end
-                            
+                           
                             if launch_package(pkg, config.game_url) then
                                 state.launch_time = os.time()
                                 state.status = "launching"
@@ -847,8 +859,8 @@ local function start_auto_rejoin()
             end
             last_heartbeat_check = current_time
         end
-        
-        if config.webhook.enabled and current_time - last_webhook >= config.webhook.interval then
+       
+        if config.webhook and config.webhook.enabled and current_time - last_webhook >= config.webhook.interval then
             local status_data = {}
             for pkg, state in pairs(package_states) do
                 table.insert(status_data, {
@@ -860,19 +872,19 @@ local function start_auto_rejoin()
             send_webhook(status_data)
             last_webhook = current_time
         end
-        
-        if config.restart.enabled then
+       
+        if config.restart and config.restart.enabled then
             for pkg, state in pairs(package_states) do
                 if state.status == "ingame" and (current_time - state.launch_time) >= config.restart.interval then
                     state.status = "restarting"
                     update_dashboard_line(state.line_num,
                         string.format("  %s%-30s%s %sRESTARTING (interval)%s", colors.cyan, pkg, colors.reset, colors.magenta, colors.reset))
-                    
+                   
                     if config.restart.type == "game" then
                         os.execute("am force-stop " .. pkg .. " 2>/dev/null")
                         os.execute("sleep 3")
                     end
-                    
+                   
                     if launch_package(pkg, config.game_url) then
                         state.launch_time = os.time()
                         state.status = "ingame"
@@ -882,7 +894,7 @@ local function start_auto_rejoin()
                 end
             end
         end
-        
+       
         os.execute("sleep 1")
     end
 end
@@ -891,9 +903,9 @@ local function webhook_config()
     clear_screen()
     print_banner()
     io.write(colors.green .. "\n=== WEBHOOK CONFIGURATION ===\n" .. colors.reset)
-    
+   
     config = load_config()
-    
+   
     if config and config.webhook then
         io.write(colors.cyan .. "Current status: " .. (config.webhook.enabled and "Enabled" or "Disabled") .. "\n" .. colors.reset)
         if config.webhook.enabled then
@@ -902,7 +914,7 @@ local function webhook_config()
         end
         io.write("\n")
     end
-    
+   
     local new_webhook = configure_webhook()
     if config then
         config.webhook = new_webhook
@@ -914,7 +926,7 @@ local function webhook_config()
     else
         io.write(colors.red .. "\n❌ No config loaded!\n" .. colors.reset)
     end
-    
+   
     io.write(colors.white .. "\nPress Enter to return..." .. colors.reset)
     io.read()
 end
@@ -923,17 +935,17 @@ local function update_url()
     clear_screen()
     print_banner()
     io.write(colors.green .. "\n=== UPDATE GAME URL ===\n" .. colors.reset)
-    
+   
     if not config then
         io.write(colors.red .. "\n❌ No config loaded!\n" .. colors.reset)
         io.write(colors.white .. "Press Enter to return..." .. colors.reset)
         io.read()
         return
     end
-    
+   
     io.write(colors.cyan .. "Current URL: " .. config.game_url .. "\n" .. colors.reset)
     local new_url = get_input("Enter new URL: ")
-    
+   
     if new_url and new_url ~= "" then
         config.game_url = new_url
         if save_config(config) then
@@ -942,7 +954,7 @@ local function update_url()
             io.write(colors.red .. "\n❌ Failed to save!\n" .. colors.reset)
         end
     end
-    
+   
     io.write(colors.white .. "\nPress Enter to return..." .. colors.reset)
     io.read()
 end
@@ -954,22 +966,22 @@ local function export_import_config()
     io.write("  1) " .. colors.cyan .. "Export config\n")
     io.write("  2) " .. colors.magenta .. "Import config\n")
     io.write(colors.white .. "  Choose: " .. colors.reset)
-    
+   
     local choice = io.read()
     choice = choice and choice:gsub("^%s+", ""):gsub("%s+$", "") or ""
-    
+   
     if choice == "1" then
         local export_path = get_input("Export path: ")
         if export_path == "" then
             export_path = os.getenv("HOME") .. "/NOKA/config_export.json"
         end
-        
+       
         os.execute("cp " .. CONFIG_PATH .. " " .. export_path .. " 2>/dev/null")
         io.write(colors.green .. "\n✅ Exported to: " .. export_path .. "\n" .. colors.reset)
-        
+       
     elseif choice == "2" then
         local import_path = get_input("Import path: ")
-        
+       
         local file = io.open(import_path, "r")
         if file then
             file:close()
@@ -980,7 +992,7 @@ local function export_import_config()
             io.write(colors.red .. "\n❌ File not found!\n" .. colors.reset)
         end
     end
-    
+   
     io.write(colors.white .. "\nPress Enter to return..." .. colors.reset)
     io.read()
 end
@@ -997,19 +1009,19 @@ end
 local function main()
     ensure_directories()
     config = load_config()
-    
+   
     while true do
         clear_screen()
         print_banner()
         print_menu()
-        
+       
         local choice = io.read()
         if choice then
             choice = choice:gsub("^%s+", ""):gsub("%s+$", "")
         else
             choice = ""
         end
-        
+       
         if choice == "1" then
             first_time_config()
             config = load_config()
