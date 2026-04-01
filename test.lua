@@ -1,390 +1,722 @@
--- ============================================================
---  NOKA [REWRITE] [BETA] [STABLE]
---  Optimized Build v3.1 | Rooted Device | Server Logic
--- ============================================================
+#!/data/data/com.termux/files/usr/bin/lua
 
-local CFG_DIR  = "/sdcard/noka"
-local CFG_PATH = "/sdcard/noka/config.json"
-local TMP_PATH = "/sdcard/noka/ui_dump.xml"
+--[[
+NOKA.lua - Roblox Auto-Rejoin Manager for Termux
+Author: Expert Lua Developer
+Version: 1.0.0
+--]]
 
-local C = {
-    CYAN   = "\27[1;36m",
-    GREEN  = "\27[1;32m",
-    BLUE   = "\27[1;34m",
-    RED    = "\27[1;31m",
-    YELLOW = "\27[1;33m",
-    RESET  = "\27[0m"
+-- Configuration
+local CONFIG_PATH = os.getenv("HOME") .. "/NOKA/config.json"
+local HEARTBEAT_FILE = os.getenv("HOME") .. "/NOKA/heartbeat.lock"
+local HEARTBEAT_DIR = os.getenv("HOME") .. "/NOKA/heartbeats/"
+local LOG_FILE = os.getenv("HOME") .. "/NOKA/noka.log"
+
+-- ANSI Color Codes
+local colors = {
+    reset = "\27[0m",
+    bold = "\27[1m",
+    cyan = "\27[36m",
+    green = "\27[32m",
+    yellow = "\27[33m",
+    red = "\27[31m",
+    magenta = "\27[35m",
+    white = "\27[37m",
+    gray = "\27[90m",
+    bg_black = "\27[40m",
+    clear = "\27[2J\27[H",
+    save_cursor = "\27[s",
+    restore_cursor = "\27[u",
+    cursor_up = "\27[1A",
+    cursor_down = "\27[1B",
+    cursor_right = "\27[1C",
+    cursor_left = "\27[1D",
+    erase_line = "\27[2K",
+    erase_down = "\27[J"
 }
 
--- ============================================================
---  PRIMITIVES
--- ============================================================
+-- Global state
+local config = nil
+local running = false
+local packages = {}
+local heartbeats = {}
+local dashboard_lines = {}
 
-local function OUT(text)
-    io.write((text or "") .. "\n")
-    io.flush()
-end
-
-local function SLEEP(n)
-    os.execute("sleep " .. tonumber(n))
-end
-
-local function FIX_TTY()
-    os.execute("stty sane 2>/dev/null")
-end
-
-local function PROMPT(msg, mandatory)
-    while true do
-        FIX_TTY()
-        io.write(msg)
-        io.flush()
-        local raw = io.read("*l") or ""
-        local res = raw:gsub("^%s*(.-)%s*$", "%1")
-        if not mandatory or res ~= "" then return res end
-        SLEEP(0.1)
+-- Utility Functions
+local function log(message, level)
+    level = level or "INFO"
+    local timestamp = os.date("%Y-%m-%d %H:%M:%S")
+    local log_line = string.format("[%s] [%s] %s\n", timestamp, level, message)
+    local file = io.open(LOG_FILE, "a")
+    if file then
+        file:write(log_line)
+        file:close()
     end
 end
 
--- Root shell wrapper
-local function SH(cmd)
-    local ok, res = pcall(function()
-        local h = io.popen("timeout 8 su -c '" .. cmd .. "' 2>/dev/null")
-        local r = h and h:read("*a") or ""
-        if h then h:close() end
-        return r:gsub("\r", ""):gsub("%s+$", "")
-    end)
-    return ok and res or ""
+local function ensure_directories()
+    local home = os.getenv("HOME")
+    os.execute("mkdir -p " .. home .. "/NOKA 2>/dev/null")
+    os.execute("mkdir -p " .. HEARTBEAT_DIR .. " 2>/dev/null")
 end
 
--- Unprivileged shell
-local function SHU(cmd)
-    local ok, res = pcall(function()
-        local h = io.popen("timeout 5 " .. cmd .. " 2>/dev/null")
-        local r = h and h:read("*a") or ""
-        if h then h:close() end
-        return r:gsub("\r", ""):gsub("%s+$", "")
-    end)
-    return ok and res or ""
-end
-
-local function CLS()
-    io.write("\27[2J\27[H")
-    io.flush()
-end
-
--- ============================================================
---  JSON ENGINE (Minimal)
--- ============================================================
-local JSON = {}
-function JSON.encode(v)
-    local t = type(v)
-    if t == "nil" then return "null"
-    elseif t == "boolean" then return v and "true" or "false"
-    elseif t == "number" then return tostring(v)
-    elseif t == "string" then return '"'..v:gsub('\\','\\\\'):gsub('"','\\"'):gsub('\n','\\n'):gsub('\r','\\r')..'"'
-    elseif t == "table" then
-        local parts, is_arr, n = {}, true, 0
-        for k in pairs(v) do n = n + 1; if type(k) ~= "number" then is_arr = false end end
-        if is_arr and n > 0 then
-            for i=1,n do table.insert(parts, JSON.encode(v[i])) end
-            return "["..table.concat(parts, ",").."]"
-        else
-            for k, val in pairs(v) do table.insert(parts, '"'..tostring(k)..'":'..JSON.encode(val)) end
-            return "{"..table.concat(parts, ",").."}"
-        end
-    end
-    return "null"
-end
-
-function JSON.decode(s)
-    if not s or s == "" then return nil end
-    local pos = 1
-    local function skip() while pos <= #s and s:sub(pos,pos):match("%s") do pos = pos + 1 end end
-    local function val()
-        skip(); local c = s:sub(pos,pos)
-        if c == '"' then
-            pos = pos + 1; local r = ""
-            while pos <= #s do
-                local ch = s:sub(pos,pos); if ch == '"' then pos = pos + 1; break end
-                if ch == "\\" then pos = pos + 1; ch = s:sub(pos,pos) end
-                r = r .. ch; pos = pos + 1
-            end
-            return r
-        elseif c == '{' then
-            pos = pos + 1; local o = {}; skip()
-            if s:sub(pos,pos) == '}' then pos = pos + 1; return o end
-            while true do
-                local k = val(); skip(); pos = pos + 1; o[k] = val(); skip()
-                if s:sub(pos,pos) == '}' then pos = pos + 1; break end
-                pos = pos + 1
-            end
-            return o
-        elseif c == '[' then
-            pos = pos + 1; local a = {}; skip()
-            if s:sub(pos,pos) == ']' then pos = pos + 1; return a end
-            while true do
-                table.insert(a, val()); skip()
-                if s:sub(pos,pos) == ']' then pos = pos + 1; break end
-                pos = pos + 1
-            end
-            return a
-        elseif s:sub(pos,pos+3) == "true" then pos = pos + 4; return true
-        elseif s:sub(pos,pos+4) == "false" then pos = pos + 5; return false
-        elseif s:sub(pos,pos+3) == "null" then pos = pos + 4; return nil
-        else
-            local n = s:match("^-?%d+%.?%d*", pos); if n then pos = pos + #n; return tonumber(n) end
-        end
-    end
-    local ok, res = pcall(val)
-    return ok and res or nil
-end
-
--- ============================================================
---  PERSISTENCE
--- ============================================================
-
-local function SAVE_CONFIG(cfg)
-    os.execute("mkdir -p " .. CFG_DIR)
-    local f = io.open(CFG_PATH, "w")
-    if f then f:write(JSON.encode(cfg)); f:close() return true end
-    return false
-end
-
-local function LOAD_CONFIG()
-    local f = io.open(CFG_PATH, "r")
-    if f then
-        local raw = f:read("*a"); f:close()
-        return JSON.decode(raw)
-    end
-    return nil
-end
-
--- ============================================================
---  UI & DASHBOARD
--- ============================================================
-
-local function BANNER(silent)
-    if silent then
-        io.write("\27[H\27[K")
-    else
-        CLS()
+local function load_config()
+    ensure_directories()
+    local file = io.open(CONFIG_PATH, "r")
+    if not file then
+        return nil
     end
     
-    local logo = {
-        [[ ███╗   ██╗  ██████╗  ██╗  ██╗  █████╗ ]],
-        [[ ████╗  ██║ ██╔═══██╗ ██║ ██╔╝ ██╔══██╗]],
-        [[ ██╔██╗ ██║ ██║   ██║ █████╔╝  ███████║]],
-        [[ ██║╚██╗██║ ██║   ██║ ██╔═██╗  ██╔══██║]],
-        [[ ██║ ╚████║ ╚██████╔╝ ██║  ██╗ ██║  ██╗]],
-        [[ ╚═╝  ╚═══╝  ╚═════╝  ╚═╝  ╚═╝ ╚═╝  ╚═╝]],
+    local content = file:read("*all")
+    file:close()
+    
+    local success, result = pcall(function()
+        return require("json").decode(content)
+    end)
+    
+    if not success then
+        log("Failed to parse config.json: " .. tostring(result), "ERROR")
+        return nil
+    end
+    
+    return result
+end
+
+local function save_config(cfg)
+    ensure_directories()
+    local file = io.open(CONFIG_PATH, "w")
+    if not file then
+        log("Failed to open config.json for writing", "ERROR")
+        return false
+    end
+    
+    local success, json = pcall(function()
+        return require("json").encode(cfg, { indent = true })
+    end)
+    
+    if not success then
+        log("Failed to encode config to JSON: " .. tostring(json), "ERROR")
+        file:close()
+        return false
+    end
+    
+    file:write(json)
+    file:close()
+    log("Configuration saved successfully", "INFO")
+    return true
+end
+
+local function clear_screen()
+    io.write(colors.clear)
+    io.flush()
+end
+
+local function print_banner()
+    io.write(colors.cyan .. colors.bold .. [[
+╔═══════════════════════════════════════════════════════════╗
+║                                                           ║
+║    ███╗   ██╗ ██████╗ ██╗  ██╗ █████╗                     ║
+║    ████╗  ██║██╔═══██╗██║ ██╔╝██╔══██╗                    ║
+║    ██╔██╗ ██║██║   ██║█████╔╝ ███████║                    ║
+║    ██║╚██╗██║██║   ██║██╔═██╗ ██╔══██║                    ║
+║    ██║ ╚████║╚██████╔╝██║  ██╗██║  ██║                    ║
+║    ╚═╝  ╚═══╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝                    ║
+║                                                           ║
+║           ROOBLOX AUTO-REJOIN MANAGER v1.0               ║
+╚═══════════════════════════════════════════════════════════╝
+]] .. colors.reset)
+end
+
+local function print_menu()
+    io.write(colors.yellow .. "\n═══════════════════════════════════════════════════════════\n" .. colors.reset)
+    io.write(colors.green .. "  MAIN MENU\n" .. colors.reset)
+    io.write(colors.yellow .. "═══════════════════════════════════════════════════════════\n" .. colors.reset)
+    io.write(colors.white .. "  1) " .. colors.cyan .. "First time configuration\n")
+    io.write(colors.white .. "  2) " .. colors.green .. "Start auto-rejoin\n")
+    io.write(colors.white .. "  3) " .. colors.magenta .. "Webhook configuration\n")
+    io.write(colors.white .. "  4) " .. colors.yellow .. "Update URL\n")
+    io.write(colors.white .. "  5) " .. colors.cyan .. "Export/Import config\n")
+    io.write(colors.white .. "  6) " .. colors.red .. "Exit\n")
+    io.write(colors.yellow .. "═══════════════════════════════════════════════════════════\n" .. colors.reset)
+    io.write(colors.white .. "  Choose option: " .. colors.reset)
+end
+
+local function input(prompt, is_password)
+    io.write(colors.cyan .. prompt .. colors.reset)
+    io.flush()
+    if is_password then
+        os.execute("stty -echo")
+    end
+    local result = io.read()
+    if is_password then
+        os.execute("stty echo")
+        io.write("\n")
+    end
+    return result
+end
+
+local function find_roblox_packages()
+    io.write(colors.yellow .. "\nScanning for Roblox packages...\n" .. colors.reset)
+    local handle = io.popen("pm list packages | grep -E \"^package:com\\.roblox\\.client\" | sed 's/^package://'")
+    local result = handle:read("*a")
+    handle:close()
+    
+    local packages_list = {}
+    for line in result:gmatch("[^\r\n]+") do
+        table.insert(packages_list, line)
+    end
+    
+    if #packages_list == 0 then
+        io.write(colors.red .. "No Roblox packages found!\n" .. colors.reset)
+        return nil
+    end
+    
+    io.write(colors.green .. "Found " .. #packages_list .. " Roblox package(s):\n" .. colors.reset)
+    for i, pkg in ipairs(packages_list) do
+        io.write(string.format("  %d) %s\n", i, pkg))
+    end
+    
+    return packages_list
+end
+
+local function select_packages(packages_list)
+    io.write(colors.yellow .. "\nPackage selection:\n" .. colors.reset)
+    io.write("  1) " .. colors.green .. "All packages\n" .. colors.reset)
+    io.write("  2) " .. colors.cyan .. "Manual selection\n" .. colors.reset)
+    io.write(colors.white .. "  Choose: " .. colors.reset)
+    
+    local choice = io.read()
+    
+    if choice == "1" then
+        return packages_list
+    elseif choice == "2" then
+        io.write(colors.yellow .. "Enter package numbers (comma-separated, e.g., 1,2): " .. colors.reset)
+        local selection = io.read()
+        local selected = {}
+        for num in selection:gmatch("%d+") do
+            local index = tonumber(num)
+            if index and index >= 1 and index <= #packages_list then
+                table.insert(selected, packages_list[index])
+            end
+        end
+        return selected
+    else
+        io.write(colors.red .. "Invalid choice, using all packages\n" .. colors.reset)
+        return packages_list
+    end
+end
+
+local function configure_webhook()
+    io.write(colors.yellow .. "\nEnable Discord webhook? (1=Yes, 2=No): " .. colors.reset)
+    local enable = io.read()
+    
+    if enable == "1" then
+        io.write(colors.cyan .. "Enter Discord webhook URL: " .. colors.reset)
+        local url = io.read()
+        io.write(colors.cyan .. "Enter message interval (seconds, min 30): " .. colors.reset)
+        local interval = tonumber(io.read()) or 60
+        if interval < 30 then interval = 30 end
+        
+        return {
+            enabled = true,
+            url = url,
+            interval = interval,
+            last_sent = 0
+        }
+    end
+    
+    return { enabled = false }
+end
+
+local function first_time_config()
+    clear_screen()
+    print_banner()
+    io.write(colors.green .. "\n=== FIRST TIME CONFIGURATION ===\n" .. colors.reset)
+    
+    -- Method selection
+    io.write(colors.yellow .. "\nMethod for fetching Roblox packages:\n" .. colors.reset)
+    io.write("  1) " .. colors.green .. "Automatic\n")
+    io.write("  2) " .. colors.cyan .. "Manual\n")
+    io.write(colors.white .. "  Choose: " .. colors.reset)
+    local method = io.read()
+    
+    local packages_list = nil
+    if method == "1" then
+        packages_list = find_roblox_packages()
+        if not packages_list then
+            io.write(colors.red .. "Automatic detection failed. Switching to manual mode.\n" .. colors.reset)
+            method = "2"
+        end
+    end
+    
+    if method == "2" then
+        io.write(colors.cyan .. "Enter exact package name: " .. colors.reset)
+        local pkg_name = io.read()
+        local check = io.popen("pm list packages | grep -q " .. pkg_name .. " && echo found")
+        local result = check:read("*a")
+        check:close()
+        
+        if not result:match("found") then
+            io.write(colors.red .. "Package not found! Please try again.\n" .. colors.reset)
+            io.write(colors.white .. "Press Enter to continue..." .. colors.reset)
+            io.read()
+            return false
+        end
+        packages_list = { pkg_name }
+    end
+    
+    -- Package selection
+    local selected_packages = select_packages(packages_list)
+    
+    -- Server URL
+    io.write(colors.cyan .. "\nEnter Roblox game URL: " .. colors.reset)
+    local game_url = io.read()
+    
+    -- Webhook configuration
+    local webhook = configure_webhook()
+    
+    -- Start interval
+    io.write(colors.yellow .. "\nStart interval between packages:\n" .. colors.reset)
+    io.write("  1) " .. colors.green .. "Custom\n")
+    io.write("  2) " .. colors.cyan .. "Default (120 seconds)\n")
+    io.write(colors.white .. "  Choose: " .. colors.reset)
+    local interval_choice = io.read()
+    
+    local start_interval = 120
+    if interval_choice == "1" then
+        io.write(colors.cyan .. "Enter interval (seconds): " .. colors.reset)
+        start_interval = tonumber(io.read()) or 120
+        if start_interval < 1 then start_interval = 1 end
+    end
+    
+    -- Restart configuration
+    io.write(colors.yellow .. "\nEnable auto-restart? (1=Yes, 2=No): " .. colors.reset)
+    local restart_enabled = io.read()
+    
+    local restart_config = { enabled = false }
+    if restart_enabled == "1" then
+        io.write(colors.cyan .. "Restart interval (minutes): " .. colors.reset)
+        local interval_min = tonumber(io.read()) or 60
+        
+        io.write(colors.yellow .. "Restart type:\n" .. colors.reset)
+        io.write("  1) " .. colors.green .. "Game restart (full package restart)\n")
+        io.write("  2) " .. colors.cyan .. "Server rejoin (rejoin game)\n")
+        io.write(colors.white .. "  Choose: " .. colors.reset)
+        local type_choice = io.read()
+        
+        restart_config = {
+            enabled = true,
+            interval = interval_min * 60,
+            type = type_choice == "1" and "game" or "rejoin"
+        }
+    end
+    
+    -- Save configuration
+    config = {
+        packages = selected_packages,
+        game_url = game_url,
+        webhook = webhook,
+        start_interval = start_interval,
+        restart = restart_config,
+        version = "1.0"
     }
     
-    io.write(C.BLUE)
-    for _, line in ipairs(logo) do
-        io.write("\27[K" .. line .. "\n")
+    if save_config(config) then
+        clear_screen()
+        print_banner()
+        io.write(colors.green .. "\n✅ Configuration completed successfully!\n" .. colors.reset)
+        io.write(colors.white .. "Press Enter to return to main menu..." .. colors.reset)
+        io.read()
+        return true
+    else
+        io.write(colors.red .. "\n❌ Failed to save configuration!\n" .. colors.reset)
+        io.write(colors.white .. "Press Enter to continue..." .. colors.reset)
+        io.read()
+        return false
     end
-    io.write(C.CYAN .. " [ MONITOR ] " .. C.YELLOW .. "[ REWRITE ] " .. C.GREEN .. "[ STABLE ]" .. C.RESET .. "\n")
-    OUT(C.BLUE .. " ────────────────────────────────────────────────────────────" .. C.RESET)
 end
 
-local function VISIBLE(s) return s:gsub("\27%[[%d;]*m", "") end
-local function PAD(s, w) return s .. string.rep(" ", math.max(0, w - #VISIBLE(s))) end
-
-local COL1, COL2 = 38, 12
-local function ROW(left, right)
-    OUT(C.BLUE .. "│ " .. C.RESET .. PAD(left, COL1) .. C.BLUE .. " │ " .. C.RESET .. PAD(right, COL2) .. C.BLUE .. " │")
+local function launch_package(package_name, game_url)
+    local intent = "am start -a android.intent.action.VIEW -d " .. game_url .. " " .. package_name
+    local result = os.execute(intent .. " > /dev/null 2>&1")
+    return result == 0
 end
 
-local _ram, _ram_time = "0MB", 0
-local function GET_RAM()
-    local now = os.time()
-    if now - _ram_time <= 10 then return _ram end
-    local data = SHU("free -m")
-    local avail = data:match("Mem:%s+%d+%s+%d+%s+%d+%s+%d+%s+%d+%s+(%d+)") or data:match("Mem:%s+%d+%s+%d+%s+(%d+)")
-    _ram = (avail or "0") .. "MB"
-    _ram_time = now
-    return _ram
-end
-
-local function MONITOR_TICK(config, status, sys_msg)
-    io.write("\27[H")
-    BANNER(true)
-    OUT(C.BLUE .. "┌────────────────────────────────────────┬──────────────┐")
-    ROW(C.YELLOW .. "NOKA DASHBOARD",        C.YELLOW .. "BETA")
-    OUT(C.BLUE .. "├────────────────────────────────────────┼──────────────┤")
-    ROW(C.CYAN .. "SYSTEM STATUS   " .. C.RESET .. (sys_msg or "OK"), C.GREEN .. "ONLINE")
-    ROW(C.CYAN .. "RAM (FREE)     " .. C.RESET .. GET_RAM(),          "v3.1")
-    OUT(C.BLUE .. "├────────────────────────────────────────┼──────────────┤")
-    ROW(C.BLUE .. "PACKAGE IDENTITY",       C.BLUE .. "STATUS")
-    OUT(C.BLUE .. "├────────────────────────────────────────┼──────────────┤")
-    for _, p in ipairs(config.PACKAGES or {}) do
-        local st = status[p] or "..."
-        local sc = C.YELLOW
-        if st == "Online" then sc = C.GREEN elseif st:match("^Off") or st:match("^Stu") then sc = C.RED elseif st:match("^Ini") or st:match("^Lau") then sc = C.CYAN end
-        ROW(C.RESET .. (#p > COL1 and p:sub(1, COL1-2)..".." or p), sc .. st .. C.RESET)
+local function check_package_status(package_name)
+    -- Check if package is running
+    local check = io.popen("pidof " .. package_name .. " 2>/dev/null")
+    local pid = check:read("*a"):gsub("%s+", "")
+    check:close()
+    
+    if pid == "" then
+        return "crashed"
     end
-    OUT(C.BLUE .. "└────────────────────────────────────────┴──────────────┘")
+    
+    -- Check for heartbeat file
+    local heartbeat_file = HEARTBEAT_DIR .. package_name:gsub("%.", "_") .. ".heartbeat"
+    local file = io.open(heartbeat_file, "r")
+    if file then
+        local timestamp = tonumber(file:read("*a"))
+        file:close()
+        if timestamp and (os.time() - timestamp) < 30 then
+            return "ingame"
+        end
+    end
+    
+    return "running"
+end
+
+local function send_webhook(status_data)
+    if not config or not config.webhook or not config.webhook.enabled then
+        return
+    end
+    
+    -- Capture screenshot
+    local screenshot_path = os.getenv("HOME") .. "/NOKA/screenshot.png"
+    os.execute("screencap -p " .. screenshot_path .. " 2>/dev/null")
+    
+    -- Build Discord embed (simplified for now)
+    local embed = {
+        title = "Roblox Auto-Rejoin Status Update",
+        description = "Current status of all monitored packages",
+        color = 0x00ff00,
+        fields = {},
+        timestamp = os.date("!%Y-%m-%dT%H:%M:%S.000Z"),
+        footer = { text = "NOKA Manager v1.0" }
+    }
+    
+    for _, status in ipairs(status_data) do
+        table.insert(embed.fields, {
+            name = status.package,
+            value = string.format("Status: %s\nUptime: %d seconds", status.status, status.uptime or 0),
+            inline = true
+        })
+    end
+    
+    -- Here you would send the webhook with the screenshot
+    -- This is a simplified version; you'd need a proper HTTP library
+    log("Webhook would be sent here", "INFO")
+    
+    config.webhook.last_sent = os.time()
+    save_config(config)
+end
+
+local function update_dashboard_line(line_num, content)
+    io.write(colors.save_cursor)
+    io.write(string.format("\27[%d;1H", line_num))
+    io.write(colors.erase_line)
+    io.write(content)
+    io.write(colors.restore_cursor)
     io.flush()
 end
 
--- ============================================================
---  SERVER JOIN LOGIC (Public & Private)
--- ============================================================
-
-local function RESOLVE_LINK(url)
-    -- 1. If it's already an HTTPS share link, keep it as-is (Roblox handles these best)
-    if url:match("^https?://") then
-        return url
+local function start_auto_rejoin()
+    if not config or not config.packages or #config.packages == 0 then
+        clear_screen()
+        print_banner()
+        io.write(colors.red .. "\n❌ No configuration found! Please run first-time configuration first.\n" .. colors.reset)
+        io.write(colors.white .. "Press Enter to return to main menu..." .. colors.reset)
+        io.read()
+        return
     end
-
-    -- 2. If it's already a roblox:// deep link
-    if url:match("^roblox://") then
-        return url
+    
+    clear_screen()
+    print_banner()
+    io.write(colors.green .. "\n=== AUTO-REJOIN ACTIVE ===\n" .. colors.reset)
+    io.write(colors.yellow .. "Press Ctrl+C to stop\n\n" .. colors.reset)
+    
+    -- Initialize packages state
+    local package_states = {}
+    local start_time = os.time()
+    
+    for i, pkg in ipairs(config.packages) do
+        package_states[pkg] = {
+            status = "pending",
+            uptime = 0,
+            last_action = 0,
+            launch_time = 0,
+            line_num = 5 + i
+        }
     end
-
-    -- 3. Private Server Access Code (Format: PLACEID:CODE)
-    local pid, code = url:match("^(%d+):([%w%-]+)$")
-    if pid and code then
-        return string.format("roblox://placeId=%s&accessCode=%s", pid, code)
+    
+    -- Launch first package
+    local function launch_next_package(index)
+        if index > #config.packages then
+            return
+        end
+        
+        local pkg = config.packages[index]
+        io.write(string.format(colors.cyan .. "Launching %s...\n" .. colors.reset, pkg))
+        
+        if launch_package(pkg, config.game_url) then
+            package_states[pkg].status = "launching"
+            package_states[pkg].last_action = os.time()
+            package_states[pkg].launch_time = os.time()
+            
+            if index < #config.packages then
+                os.execute("sleep " .. config.start_interval)
+                launch_next_package(index + 1)
+            end
+        else
+            package_states[pkg].status = "failed"
+            log("Failed to launch " .. pkg, "ERROR")
+        end
     end
-
-    -- 4. Bare Place ID (e.g., 18526564619)
-    local bare_id = url:match("^(%d+)$")
-    if bare_id then
-        return "roblox://placeId=" .. bare_id
-    end
-
-    -- 5. Game Page Extraction (e.g., roblox.com/games/18526564619)
-    local game_id = url:match("/games/(%d+)")
-    if game_id then
-        return "roblox://placeId=" .. game_id
-    end
-
-    return "roblox://placeId=" .. url
-end
-
-local function DISMISS_POPUPS()
-    SH("uiautomator dump " .. TMP_PATH)
-    local f = io.open(TMP_PATH, "r")
-    if f then
-        local xml = f:read("*a"); f:close()
-        for _, kw in ipairs({ "Play", "Resume", "Join", "OK", "Continue" }) do
-            local bounds = xml:match('text="' .. kw .. '".-bounds="([^"]+)"') or xml:match('content%-desc="[^"]*' .. kw .. '[^"]*".-bounds="([^"]+)"')
-            if bounds then
-                local x1, y1, x2, y2 = bounds:match("(%d+),(%d+)%D+(%d+),(%d+)")
-                if x1 then SH(string.format("input tap %d %d", math.floor((tonumber(x1)+tonumber(x2))/2), math.floor((tonumber(y1)+tonumber(y2))/2))); return end
+    
+    -- Start launch sequence
+    launch_next_package(1)
+    
+    -- Main monitoring loop
+    running = true
+    local last_webhook = 0
+    local last_heartbeat_check = 0
+    
+    while running do
+        local current_time = os.time()
+        
+        -- Update dashboard
+        for pkg, state in pairs(package_states) do
+            if state.status == "ingame" then
+                state.uptime = current_time - state.launch_time
+            end
+            
+            local status_color = colors.green
+            if state.status == "crashed" then
+                status_color = colors.red
+            elseif state.status == "launching" then
+                status_color = colors.yellow
+            elseif state.status == "restarting" then
+                status_color = colors.magenta
+            end
+            
+            local status_text = string.format(
+                "  %s%-20s%s  %s%-12s%s  %s%-8s%s  %s%s",
+                colors.cyan, pkg:sub(1, 20), colors.reset,
+                status_color, string.upper(state.status), colors.reset,
+                colors.white, state.uptime .. "s", colors.reset,
+                colors.gray, os.date("%H:%M:%S", state.last_action)
+            )
+            
+            update_dashboard_line(state.line_num, status_text)
+        end
+        
+        -- Check package status every 5 seconds
+        if current_time - last_heartbeat_check >= 5 then
+            for pkg, state in pairs(package_states) do
+                local status = check_package_status(pkg)
+                
+                if status == "crashed" and state.status ~= "crashed" and state.status ~= "restarting" then
+                    state.status = "crashed"
+                    log(pkg .. " has crashed", "WARN")
+                    
+                    -- Send webhook notification
+                    if config.webhook.enabled then
+                        -- Would send crash notification
+                    end
+                    
+                    -- Handle restart if enabled
+                    if config.restart.enabled then
+                        state.status = "restarting"
+                        if config.restart.type == "game" then
+                            os.execute("am force-stop " .. pkg)
+                            os.execute("sleep 5")
+                            launch_package(pkg, config.game_url)
+                            state.launch_time = os.time()
+                            state.status = "launching"
+                        else
+                            launch_package(pkg, config.game_url)
+                            state.launch_time = os.time()
+                            state.status = "launching"
+                        end
+                        state.last_action = os.time()
+                    end
+                elseif status == "ingame" then
+                    if state.status ~= "ingame" then
+                        state.status = "ingame"
+                        state.launch_time = current_time
+                        log(pkg .. " is now in-game", "INFO")
+                    end
+                end
+            end
+            last_heartbeat_check = current_time
+        end
+        
+        -- Send periodic webhook
+        if config.webhook.enabled and current_time - last_webhook >= config.webhook.interval then
+            local status_data = {}
+            for pkg, state in pairs(package_states) do
+                table.insert(status_data, {
+                    package = pkg,
+                    status = state.status,
+                    uptime = state.uptime
+                })
+            end
+            send_webhook(status_data)
+            last_webhook = current_time
+        end
+        
+        -- Check for restart interval
+        if config.restart.enabled then
+            for pkg, state in pairs(package_states) do
+                if state.status == "ingame" and (current_time - state.launch_time) >= config.restart.interval then
+                    state.status = "restarting"
+                    if config.restart.type == "game" then
+                        os.execute("am force-stop " .. pkg)
+                        os.execute("sleep 5")
+                        launch_package(pkg, config.game_url)
+                        state.launch_time = os.time()
+                        state.status = "ingame"
+                    else
+                        launch_package(pkg, config.game_url)
+                        state.launch_time = os.time()
+                        state.status = "ingame"
+                    end
+                    state.last_action = os.time()
+                    log(pkg .. " restarted due to interval", "INFO")
+                end
             end
         end
+        
+        os.execute("sleep 1")
     end
-    for _, pos in ipairs({ "540,1200", "540,1100", "540,960" }) do SH("input tap " .. pos); SLEEP(0.5) end
 end
 
--- ============================================================
---  LAUNCH PIPELINE
--- ============================================================
-
-local function LAUNCH_INSTANCE(p, deep_link, all_pkgs, config, status)
-    local idx = 1
-    for i, pkg in ipairs(all_pkgs) do if pkg == p then idx = i; break end end
+local function webhook_config()
+    clear_screen()
+    print_banner()
+    io.write(colors.green .. "\n=== WEBHOOK CONFIGURATION ===\n" .. colors.reset)
     
-    local sw, sh = 1080, 1920
-    local s = SHU("wm size"); local ow, oh = s:match("Override size: (%d+)x(%d+)"); local pw, ph = s:match("Physical size: (%d+)x(%d+)")
-    sw, sh = tonumber(ow or pw or 1080), tonumber(oh or ph or 1920)
-    
-    local ls = sw > sh; local cols = 1; if #all_pkgs == 2 then cols = ls and 2 or 1 elseif #all_pkgs > 2 then cols = ls and 3 or 2 end
-    local rows = math.ceil(#all_pkgs / cols); local w, h = math.floor(sw/cols), math.floor(sh/rows)
-    local x = ((idx-1)%cols)*w; local y = math.floor((idx-1)/cols)*h
-    local bounds = string.format("%d,%d,%d,%d", x, y, x+w, y+h)
-
-    SH("am force-stop " .. p); SH("rm -rf /data/data/" .. p .. "/cache/*")
-    SH("settings put global enable_freeform_support 1; settings put global force_resizable_activities 1; cmd window set-freeform-windowing-mode 1")
-
-    status[p] = "Launching"
-    MONITOR_TICK(config, status, "Applying Layout " .. idx)
-
-    local acts = { "com.roblox.client.ActivityProtocolLaunch", "com.roblox.client.startup.ActivitySplash", "com.roblox.client.ActivityProtocol" }
-    local ok = false
-    for _, act in ipairs(acts) do
-        local cmd = string.format('am start -n %s/%s -a android.intent.action.VIEW -d "%s" --windowingMode 5 --bounds %s', p, act, deep_link, bounds)
-        if not SH(cmd):match("[Ee]rror") then ok = true; break end
-    end
-    if not ok then SH(string.format('am start -a android.intent.action.VIEW -d "%s" -p %s', deep_link, p)) end
-
-    for i = 8, 1, -1 do status[p] = "Init ("..i.."s)"; MONITOR_TICK(config, status, "Initializing Instance"); SLEEP(1) end
-    DISMISS_POPUPS()
-    status[p] = "Waiting"
-end
-
--- ============================================================
---  EXECUTION
--- ============================================================
-
-local function START_REJOIN()
-    local cfg = LOAD_CONFIG()
-    if not cfg then OUT(C.RED.."Config not found!"); return end
-    local link = RESOLVE_LINK(cfg.URL or "")
-    local status = {}
-    for i, p in ipairs(cfg.PACKAGES) do
-        local t0 = os.time(); LAUNCH_INSTANCE(p, link, cfg.PACKAGES, cfg, status)
-        if i < #cfg.PACKAGES then
-            local wait = (cfg.DELAY or 30) - (os.time()-t0)
-            for s = wait, 1, -1 do if s > 0 then MONITOR_TICK(cfg, status, "Cooldown ("..s.."s)"); SLEEP(1) end end
+    if config and config.webhook then
+        io.write(colors.cyan .. "Current webhook status: " .. (config.webhook.enabled and "Enabled" or "Disabled") .. "\n" .. colors.reset)
+        if config.webhook.enabled then
+            io.write("  URL: " .. config.webhook.url .. "\n")
+            io.write("  Interval: " .. config.webhook.interval .. " seconds\n")
         end
+        io.write("\n")
     end
-    while true do
-        for i, p in ipairs(cfg.PACKAGES) do
-            MONITOR_TICK(cfg, status, "Scanning ["..i.."/"..#cfg.PACKAGES.."]")
-            local alive = SHU("ps -A | grep "..p) ~= ""; local ws = string.format("%s/%s/workspace", cfg.BASE_PATH or "", p)
-            if alive then
-                local hb = string.format("%s/noka_hb_%s.txt", ws, p); local ts = tonumber(SH("stat -c %Y "..hb))
-                if ts and (os.time() - ts) < 60 then status[p] = "Online" elseif ts and (os.time()-ts) < 180 then status[p] = "Stuck" else status[p] = "Offline" end
-            else status[p] = "Offline" end
-            SLEEP(0.2)
-        end
-        for s = 20, 1, -1 do MONITOR_TICK(cfg, status, "Wait ("..s.."s)"); SLEEP(1) end
-        for _, p in ipairs(cfg.PACKAGES) do if status[p] == "Stuck" or status[p] == "Offline" then LAUNCH_INSTANCE(p, link, cfg.PACKAGES, cfg, status) end end
-    end
-end
-
-local function SETUP()
-    BANNER()
-    OUT(C.YELLOW.."[ Noka Configuration ]"..C.RESET)
-    OUT(" 1) automatic")
-    OUT(C.BLUE .. " ────────────────────────────────────────────────────────────" .. C.RESET)
-    local mode = PROMPT(C.CYAN.." Select: "..C.RESET, true)
     
-    local found = {}
-    if mode == "1" then
-        local list = SH("pm list packages | grep roblox")
-        for p in list:gmatch("package:([%w%.%-]+)") do found[#found+1] = p end
+    local new_webhook = configure_webhook()
+    if config then
+        config.webhook = new_webhook
+        save_config(config)
+        io.write(colors.green .. "\n✅ Webhook configuration updated!\n" .. colors.reset)
     else
-        local raw = PROMPT(C.YELLOW.." Packages: "..C.RESET, true)
-        for p in raw:gmatch("([^,]+)") do found[#found+1] = p:gsub("%s+", "") end
+        io.write(colors.red .. "\n❌ No configuration loaded. Please run first-time configuration first.\n" .. colors.reset)
     end
-    if #found == 0 then OUT(C.RED.."No packages!"); return end
-    OUT("\nDetected:")
-    for i, p in ipairs(found) do OUT(string.format(" %d) %s", i, p)) end
-    local url = PROMPT(C.CYAN.."\n URL / ID / Private (PID:CODE): "..C.RESET)
-    local delay = tonumber(PROMPT(C.CYAN.." Delay (30): "..C.RESET)) or 30
-    local base_path = PROMPT(C.CYAN.." Executor Path: "..C.RESET)
-    for _, pkg in ipairs(found) do
-        local exec = base_path.."/"..pkg.."/autoexecute"; SH("mkdir -p "..exec)
-        local raw = string.format('_G.NOKA_PKG="%s";loadstring(game:HttpGet("https://raw.githubusercontent.com/lofaif1234/noka/refs/heads/main/noka-script.lua"))()', pkg)
-        SH(string.format("echo '%s' | base64 -d > %s/noka.txt", SHU("echo -n '"..raw.."' | base64"), exec))
-    end
-    SAVE_CONFIG({ PACKAGES=found, URL=url, DELAY=delay, BASE_PATH=base_path })
-    OUT(C.GREEN.."Setup Complete!"); SLEEP(2)
+    
+    io.write(colors.white .. "\nPress Enter to return to main menu..." .. colors.reset)
+    io.read()
 end
 
-local function MAIN()
+local function update_url()
+    clear_screen()
+    print_banner()
+    io.write(colors.green .. "\n=== UPDATE GAME URL ===\n" .. colors.reset)
+    
+    if not config then
+        io.write(colors.red .. "\n❌ No configuration loaded. Please run first-time configuration first.\n" .. colors.reset)
+        io.write(colors.white .. "Press Enter to return to main menu..." .. colors.reset)
+        io.read()
+        return
+    end
+    
+    io.write(colors.cyan .. "Current URL: " .. config.game_url .. "\n" .. colors.reset)
+    io.write(colors.cyan .. "Enter new Roblox game URL: " .. colors.reset)
+    local new_url = io.read()
+    
+    if new_url and new_url ~= "" then
+        config.game_url = new_url
+        save_config(config)
+        io.write(colors.green .. "\n✅ URL updated successfully!\n" .. colors.reset)
+    else
+        io.write(colors.red .. "\n❌ Invalid URL. No changes made.\n" .. colors.reset)
+    end
+    
+    io.write(colors.white .. "\nPress Enter to return to main menu..." .. colors.reset)
+    io.read()
+end
+
+local function export_import_config()
+    clear_screen()
+    print_banner()
+    io.write(colors.green .. "\n=== EXPORT/IMPORT CONFIGURATION ===\n" .. colors.reset)
+    io.write("  1) " .. colors.cyan .. "Export config\n")
+    io.write("  2) " .. colors.magenta .. "Import config\n")
+    io.write(colors.white .. "  Choose: " .. colors.reset)
+    
+    local choice = io.read()
+    
+    if choice == "1" then
+        io.write(colors.cyan .. "Enter export path (default: ~/NOKA/config_export.json): " .. colors.reset)
+        local export_path = io.read()
+        if export_path == "" then
+            export_path = os.getenv("HOME") .. "/NOKA/config_export.json"
+        end
+        
+        local cmd = "cp " .. CONFIG_PATH .. " " .. export_path
+        os.execute(cmd)
+        io.write(colors.green .. "\n✅ Config exported to: " .. export_path .. "\n" .. colors.reset)
+        
+    elseif choice == "2" then
+        io.write(colors.cyan .. "Enter import file path: " .. colors.reset)
+        local import_path = io.read()
+        
+        local file = io.open(import_path, "r")
+        if file then
+            file:close()
+            local cmd = "cp " .. import_path .. " " .. CONFIG_PATH
+            os.execute(cmd)
+            config = load_config()
+            io.write(colors.green .. "\n✅ Config imported successfully!\n" .. colors.reset)
+        else
+            io.write(colors.red .. "\n❌ File not found: " .. import_path .. "\n" .. colors.reset)
+        end
+    end
+    
+    io.write(colors.white .. "\nPress Enter to return to main menu..." .. colors.reset)
+    io.read()
+end
+
+local function exit_tool()
+    clear_screen()
+    io.write(colors.green .. "\nThank you for using NOKA Auto-Rejoin Manager!\n" .. colors.reset)
+    io.write(colors.cyan .. "Goodbye!\n\n" .. colors.reset)
+    running = false
+    os.exit(0)
+end
+
+-- Main program
+local function main()
+    -- Load existing config
+    config = load_config()
+    
+    -- Main menu loop
     while true do
-        BANNER()
-        OUT(" 1) Setup & deploy")
-        OUT(" 2) Run Auto-rejoin")
-        OUT(" 9) Exit")
-        OUT(C.BLUE .. " ────────────────────────────────────────────────────────────" .. C.RESET)
-        local c = PROMPT(C.CYAN .. " Select: " .. C.RESET, true)
-        if c == "1" then SETUP() elseif c == "2" then START_REJOIN() elseif c == "9" then break end
+        clear_screen()
+        print_banner()
+        print_menu()
+        
+        local choice = io.read()
+        
+        if choice == "1" then
+            first_time_config()
+            config = load_config()
+        elseif choice == "2" then
+            start_auto_rejoin()
+        elseif choice == "3" then
+            webhook_config()
+        elseif choice == "4" then
+            update_url()
+        elseif choice == "5" then
+            export_import_config()
+        elseif choice == "6" then
+            exit_tool()
+        else
+            io.write(colors.red .. "\nInvalid option. Press Enter to continue..." .. colors.reset)
+            io.read()
+        end
     end
 end
-MAIN()
+
+-- Start the program
+main()
