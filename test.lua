@@ -89,9 +89,14 @@ function json.encode(data)
 end
 
 function json.decode(str)
-    local success, val = pcall(function()
-        return load("return " .. str)()
-    end)
+    if not str or str == "" then
+        return nil
+    end
+    local func, err = load("return " .. str)
+    if not func then
+        return nil
+    end
+    local success, val = pcall(func)
     if success then
         return val
     end
@@ -131,15 +136,7 @@ local function load_config()
         return nil
     end
     
-    local success, result = pcall(function()
-        return json.decode(content)
-    end)
-    
-    if not success then
-        log("Failed to parse config.json", "ERROR")
-        return nil
-    end
-    
+    local result = json.decode(content)
     return result
 end
 
@@ -152,11 +149,8 @@ local function save_config(cfg)
         return false
     end
     
-    local success, json_str = pcall(function()
-        return json.encode(cfg)
-    end)
-    
-    if not success then
+    local json_str = json.encode(cfg)
+    if not json_str then
         log("Failed to encode config to JSON", "ERROR")
         file:close()
         return false
@@ -203,6 +197,16 @@ local function print_menu()
     io.write(colors.white .. "  6) " .. colors.red .. "Exit\n")
     io.write(colors.yellow .. "═══════════════════════════════════════════════════════════\n" .. colors.reset)
     io.write(colors.white .. "  Choose option: " .. colors.reset)
+end
+
+local function get_input(prompt)
+    io.write(colors.cyan .. prompt .. colors.reset)
+    io.flush()
+    local input = io.read()
+    if input then
+        input = input:gsub("^%s+", ""):gsub("%s+$", "")
+    end
+    return input
 end
 
 local function find_roblox_packages()
@@ -262,12 +266,14 @@ local function select_packages(packages_list)
     io.write(colors.white .. "  Choose: " .. colors.reset)
     
     local choice = io.read()
+    choice = choice and choice:gsub("^%s+", ""):gsub("%s+$", "") or ""
     
     if choice == "1" then
         return packages_list
     elseif choice == "2" then
         io.write(colors.yellow .. "Enter package numbers (comma-separated): " .. colors.reset)
         local selection = io.read()
+        selection = selection and selection:gsub("^%s+", ""):gsub("%s+$", "") or ""
         local selected = {}
         for num in selection:gmatch("%d+") do
             local index = tonumber(num)
@@ -287,10 +293,10 @@ end
 local function configure_webhook()
     io.write(colors.yellow .. "\nEnable Discord webhook? (1=Yes, 2=No): " .. colors.reset)
     local enable = io.read()
+    enable = enable and enable:gsub("^%s+", ""):gsub("%s+$", "") or ""
     
     if enable == "1" then
-        io.write(colors.cyan .. "Enter Discord webhook URL: " .. colors.reset)
-        local url = io.read()
+        local url = get_input("Enter Discord webhook URL: ")
         io.write(colors.cyan .. "Enter message interval (seconds, min 30): " .. colors.reset)
         local interval = tonumber(io.read()) or 60
         if interval < 30 then interval = 30 end
@@ -316,6 +322,7 @@ local function first_time_config()
     io.write("  2) " .. colors.cyan .. "Manual\n")
     io.write(colors.white .. "  Choose: " .. colors.reset)
     local method = io.read()
+    method = method and method:gsub("^%s+", ""):gsub("%s+$", "") or ""
     
     local packages_list = nil
     
@@ -324,7 +331,8 @@ local function first_time_config()
         if not packages_list or #packages_list == 0 then
             io.write(colors.red .. "\nAutomatic detection failed.\n" .. colors.reset)
             io.write(colors.yellow .. "Switch to manual mode? (y/n): " .. colors.reset)
-            local switch = io.read():lower()
+            local switch = io.read()
+            switch = switch and switch:lower():gsub("^%s+", ""):gsub("%s+$", "") or ""
             if switch == "y" then
                 method = "2"
             else
@@ -343,8 +351,11 @@ local function first_time_config()
         while true do
             io.write(colors.white .. "Package " .. (#packages_list + 1) .. ": " .. colors.reset)
             local pkg_name = io.read()
+            if pkg_name then
+                pkg_name = pkg_name:gsub("^%s+", ""):gsub("%s+$", "")
+            end
             
-            if pkg_name == "" then
+            if not pkg_name or pkg_name == "" then
                 if #packages_list == 0 then
                     io.write(colors.red .. "At least one package required!\n" .. colors.reset)
                 else
@@ -357,7 +368,8 @@ local function first_time_config()
                 else
                     io.write(colors.red .. "✗ Package not found\n" .. colors.reset)
                     io.write(colors.yellow .. "Add anyway? (y/n): " .. colors.reset)
-                    local force = io.read():lower()
+                    local force = io.read()
+                    force = force and force:lower():gsub("^%s+", ""):gsub("%s+$", "") or ""
                     if force == "y" then
                         table.insert(packages_list, pkg_name)
                         io.write(colors.yellow .. "✓ Added unverified\n" .. colors.reset)
@@ -366,7 +378,8 @@ local function first_time_config()
             end
             
             io.write(colors.white .. "Add another? (y/n): " .. colors.reset)
-            local add_more = io.read():lower()
+            local add_more = io.read()
+            add_more = add_more and add_more:lower():gsub("^%s+", ""):gsub("%s+$", "") or ""
             if add_more ~= "y" then
                 break
             end
@@ -385,8 +398,7 @@ local function first_time_config()
         selected_packages = select_packages(packages_list)
     end
     
-    io.write(colors.cyan .. "\nEnter Roblox game URL: " .. colors.reset)
-    local game_url = io.read()
+    local game_url = get_input("\nEnter Roblox game URL: ")
     
     if not game_url or game_url == "" then
         io.write(colors.red .. "URL required!\n" .. colors.reset)
@@ -402,6 +414,7 @@ local function first_time_config()
     io.write("  2) " .. colors.cyan .. "Default (120 seconds)\n")
     io.write(colors.white .. "  Choose: " .. colors.reset)
     local interval_choice = io.read()
+    interval_choice = interval_choice and interval_choice:gsub("^%s+", ""):gsub("%s+$", "") or ""
     
     local start_interval = 120
     if interval_choice == "1" then
@@ -412,6 +425,7 @@ local function first_time_config()
     
     io.write(colors.yellow .. "\nEnable auto-restart? (1=Yes, 2=No): " .. colors.reset)
     local restart_enabled = io.read()
+    restart_enabled = restart_enabled and restart_enabled:gsub("^%s+", ""):gsub("%s+$", "") or ""
     
     local restart_config = { enabled = false }
     if restart_enabled == "1" then
@@ -423,6 +437,7 @@ local function first_time_config()
         io.write("  2) " .. colors.cyan .. "Server rejoin\n")
         io.write(colors.white .. "  Choose: " .. colors.reset)
         local type_choice = io.read()
+        type_choice = type_choice and type_choice:gsub("^%s+", ""):gsub("%s+$", "") or ""
         
         restart_config = {
             enabled = true,
@@ -715,8 +730,7 @@ local function update_url()
     end
     
     io.write(colors.cyan .. "Current URL: " .. config.game_url .. "\n" .. colors.reset)
-    io.write(colors.cyan .. "Enter new URL: " .. colors.reset)
-    local new_url = io.read()
+    local new_url = get_input("Enter new URL: ")
     
     if new_url and new_url ~= "" then
         config.game_url = new_url
@@ -740,10 +754,10 @@ local function export_import_config()
     io.write(colors.white .. "  Choose: " .. colors.reset)
     
     local choice = io.read()
+    choice = choice and choice:gsub("^%s+", ""):gsub("%s+$", "") or ""
     
     if choice == "1" then
-        io.write(colors.cyan .. "Export path: " .. colors.reset)
-        local export_path = io.read()
+        local export_path = get_input("Export path: ")
         if export_path == "" then
             export_path = os.getenv("HOME") .. "/NOKA/config_export.json"
         end
@@ -752,8 +766,7 @@ local function export_import_config()
         io.write(colors.green .. "\n✅ Exported to: " .. export_path .. "\n" .. colors.reset)
         
     elseif choice == "2" then
-        io.write(colors.cyan .. "Import path: " .. colors.reset)
-        local import_path = io.read()
+        local import_path = get_input("Import path: ")
         
         local file = io.open(import_path, "r")
         if file then
@@ -789,6 +802,11 @@ local function main()
         print_menu()
         
         local choice = io.read()
+        if choice then
+            choice = choice:gsub("^%s+", ""):gsub("%s+$", "")
+        else
+            choice = ""
+        end
         
         if choice == "1" then
             first_time_config()
@@ -804,8 +822,8 @@ local function main()
         elseif choice == "6" then
             exit_tool()
         else
-            io.write(colors.red .. "\nInvalid option!\n" .. colors.reset)
-            io.write(colors.white .. "Press Enter..." .. colors.reset)
+            io.write(colors.red .. "\nInvalid option: '" .. choice .. "'\n" .. colors.reset)
+            io.write(colors.white .. "Press Enter to continue..." .. colors.reset)
             io.read()
         end
     end
