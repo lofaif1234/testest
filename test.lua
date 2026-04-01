@@ -866,4 +866,53 @@ local function export_import_config()
         end
     end
     
-    io.write(colors.white ..
+    io.write(colors.white .. "\nPress Enter to return to main menu..." .. colors.reset)
+    io.read()
+end
+
+local function exit_tool()
+    clear_screen()
+    io.write(colors.green .. "\nThank you for using NOKA Auto-Rejoin Manager!\n" .. colors.reset)
+    io.write(colors.cyan .. "Goodbye!\n\n" .. colors.reset)
+    running = false
+    os.exit(0)
+end
+
+-- Main program
+local function main()
+    -- Create directories first
+    ensure_directories()
+    
+    -- Load existing config
+    config = load_config()
+    
+    -- Main menu loop
+    while true do
+        clear_screen()
+        print_banner()
+        print_menu()
+        
+        local choice = io.read()
+        
+        if choice == "1" then
+            first_time_config()
+            config = load_config()
+        elseif choice == "2" then
+            start_auto_rejoin()
+        elseif choice == "3" then
+            webhook_config()
+        elseif choice == "4" then
+            update_url()
+        elseif choice == "5" then
+            export_import_config()
+        elseif choice == "6" then
+            exit_tool()
+        else
+            io.write(colors.red .. "\nInvalid option. Press Enter to continue..." .. colors.reset)
+            io.read()
+        end
+    end
+end
+
+-- Start the program
+main()
