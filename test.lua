@@ -3,9 +3,9 @@
 --  Optimized Build v3.1 | Rooted Device | Server Logic
 -- ============================================================
 
-local CFG_PATH = "/sdcard/noka/config.lua"
 local CFG_DIR  = "/sdcard/noka"
-local TMP_PATH = "/sdcard/noka_tmp.xml"
+local CFG_PATH = "/sdcard/noka/config.json"
+local TMP_PATH = "/sdcard/noka/ui_dump.xml"
 
 local C = {
     CYAN   = "\27[1;36m",
@@ -54,6 +54,93 @@ end
 local function CLS()
     io.write("\27[2J\27[H")
     io.flush()
+end
+
+-- ============================================================
+--  JSON ENGINE (Minimal)
+-- ============================================================
+local JSON = {}
+function JSON.encode(v)
+    local t = type(v)
+    if t == "nil" then return "null"
+    elseif t == "boolean" then return v and "true" or "false"
+    elseif t == "number" then return tostring(v)
+    elseif t == "string" then return '"'..v:gsub('\\','\\\\'):gsub('"','\\"'):gsub('\n','\\n'):gsub('\r','\\r')..'"'
+    elseif t == "table" then
+        local parts, is_arr, n = {}, true, 0
+        for k in pairs(v) do n = n + 1; if type(k) ~= "number" then is_arr = false end end
+        if is_arr and n > 0 then
+            for i=1,n do table.insert(parts, JSON.encode(v[i])) end
+            return "["..table.concat(parts, ",").."]"
+        else
+            for k, val in pairs(v) do table.insert(parts, '"'..tostring(k)..'":'..JSON.encode(val)) end
+            return "{"..table.concat(parts, ",").."}"
+        end
+    end
+    return "null"
+end
+
+function JSON.decode(s)
+    if not s or s == "" then return nil end
+    local pos = 1
+    local function skip() while pos <= #s and s:sub(pos,pos):match("%s") do pos = pos + 1 end end
+    local function val()
+        skip(); local c = s:sub(pos,pos)
+        if c == '"' then
+            pos = pos + 1; local r = ""
+            while pos <= #s do
+                local ch = s:sub(pos,pos); if ch == '"' then pos = pos + 1; break end
+                if ch == "\\" then pos = pos + 1; ch = s:sub(pos,pos) end
+                r = r .. ch; pos = pos + 1
+            end
+            return r
+        elseif c == '{' then
+            pos = pos + 1; local o = {}; skip()
+            if s:sub(pos,pos) == '}' then pos = pos + 1; return o end
+            while true do
+                local k = val(); skip(); pos = pos + 1; o[k] = val(); skip()
+                if s:sub(pos,pos) == '}' then pos = pos + 1; break end
+                pos = pos + 1
+            end
+            return o
+        elseif c == '[' then
+            pos = pos + 1; local a = {}; skip()
+            if s:sub(pos,pos) == ']' then pos = pos + 1; return a end
+            while true do
+                table.insert(a, val()); skip()
+                if s:sub(pos,pos) == ']' then pos = pos + 1; break end
+                pos = pos + 1
+            end
+            return a
+        elseif s:sub(pos,pos+3) == "true" then pos = pos + 4; return true
+        elseif s:sub(pos,pos+4) == "false" then pos = pos + 5; return false
+        elseif s:sub(pos,pos+3) == "null" then pos = pos + 4; return nil
+        else
+            local n = s:match("^-?%d+%.?%d*", pos); if n then pos = pos + #n; return tonumber(n) end
+        end
+    end
+    local ok, res = pcall(val)
+    return ok and res or nil
+end
+
+-- ============================================================
+--  PERSISTENCE
+-- ============================================================
+
+local function SAVE_CONFIG(cfg)
+    os.execute("mkdir -p " .. CFG_DIR)
+    local f = io.open(CFG_PATH, "w")
+    if f then f:write(JSON.encode(cfg)); f:close() return true end
+    return false
+end
+
+local function LOAD_CONFIG()
+    local f = io.open(CFG_PATH, "r")
+    if f then
+        local raw = f:read("*a"); f:close()
+        return JSON.decode(raw)
+    end
+    return nil
 end
 
 -- ============================================================
@@ -217,8 +304,9 @@ end
 -- ============================================================
 
 local function START_REJOIN()
-    local f = loadfile(CFG_PATH); if not f then OUT(C.RED.."Config not found!"); return end
-    local cfg = f(); local link = RESOLVE_LINK(cfg.URL or "")
+    local cfg = LOAD_CONFIG()
+    if not cfg then OUT(C.RED.."Config not found!"); return end
+    local link = RESOLVE_LINK(cfg.URL or "")
     local status = {}
     for i, p in ipairs(cfg.PACKAGES) do
         local t0 = os.time(); LAUNCH_INSTANCE(p, link, cfg.PACKAGES, cfg, status)
@@ -256,7 +344,7 @@ local function SETUP()
         local raw = string.format('_G.NOKA_PKG="%s";loadstring(game:HttpGet("https://raw.githubusercontent.com/lofaif1234/noka/refs/heads/main/noka-script.lua"))()', pkg)
         SH(string.format("echo '%s' | base64 -d > %s/noka.txt", SHU("echo -n '"..raw.."' | base64"), exec))
     end
-    os.execute("mkdir -p "..CFG_DIR); local f = io.open(CFG_PATH, "w"); f:write(string.format('return { PACKAGES={"%s"}, URL="%s", DELAY=%d, BASE_PATH="%s" }', table.concat(found, '","'), url, delay, base_path)); f:close()
+    SAVE_CONFIG({ PACKAGES=found, URL=url, DELAY=delay, BASE_PATH=base_path })
     OUT(C.GREEN.."Setup Complete!"); SLEEP(2)
 end
 
