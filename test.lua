@@ -157,77 +157,147 @@ end
 
 local function find_roblox_packages()
     io.write(colors.yellow .. "\nScanning for Roblox packages...\n" .. colors.reset)
-    local handle = io.popen("pm list packages | grep -E \"^package:com\\.roblox\\.client\" | sed 's/^package://'")
-    local result = handle:read("*a")
+    
+    -- More comprehensive search for any Roblox-related packages
+    local patterns = {
+        "com\\.roblox\\.client",
+        "com\\.roblox\\.clien",  -- For incomplete package names
+        "com\\.roblox\\.",
+        "roblox",
+        "com\\.rblx",
+        "com\\.roblox"
+    }
+    
+    local all_packages = {}
+    local handle = io.popen("pm list packages")
+    local all_output = handle:read("*a")
     handle:close()
     
-    local packages_list = {}
-    for line in result:gmatch("[^\r\n]+") do
-        table.insert(packages_list, line)
-    end
-    
-    if #packages_list == 0 then
-        io.write(colors.red .. "No Roblox packages found!\n" .. colors.reset)
-        return nil
-    end
-    
-    io.write(colors.green .. "Found " .. #packages_list .. " Roblox package(s):\n" .. colors.reset)
-    for i, pkg in ipairs(packages_list) do
-        io.write(string.format("  %d) %s\n", i, pkg))
-    end
-    
-    return packages_list
-end
-
-local function select_packages(packages_list)
-    io.write(colors.yellow .. "\nPackage selection:\n" .. colors.reset)
-    io.write("  1) " .. colors.green .. "All packages\n" .. colors.reset)
-    io.write("  2) " .. colors.cyan .. "Manual selection\n" .. colors.reset)
-    io.write(colors.white .. "  Choose: " .. colors.reset)
-    
-    local choice = io.read()
-    
-    if choice == "1" then
-        return packages_list
-    elseif choice == "2" then
-        io.write(colors.yellow .. "Enter package numbers (comma-separated, e.g., 1,2): " .. colors.reset)
-        local selection = io.read()
-        local selected = {}
-        for num in selection:gmatch("%d+") do
-            local index = tonumber(num)
-            if index and index >= 1 and index <= #packages_list then
-                table.insert(selected, packages_list[index])
+    -- Search with multiple patterns
+    for _, pattern in ipairs(patterns) do
+        for line in all_output:gmatch("[^\r\n]+") do
+            local pkg = line:match("^package:(.+)$")
+            if pkg and pkg:lower():match(pattern) then
+                local found = false
+                for _, existing in ipairs(all_packages) do
+                    if existing == pkg then
+                        found = true
+                        break
+                    end
+                end
+                if not found then
+                    table.insert(all_packages, pkg)
+                end
             end
         end
-        return selected
-    else
-        io.write(colors.red .. "Invalid choice, using all packages\n" .. colors.reset)
-        return packages_list
     end
-end
-
-local function configure_webhook()
-    io.write(colors.yellow .. "\nEnable Discord webhook? (1=Yes, 2=No): " .. colors.reset)
-    local enable = io.read()
     
-    if enable == "1" then
-        io.write(colors.cyan .. "Enter Discord webhook URL: " .. colors.reset)
-        local url = io.read()
-        io.write(colors.cyan .. "Enter message interval (seconds, min 30): " .. colors.reset)
-        local interval = tonumber(io.read()) or 60
-        if interval < 30 then interval = 30 end
+    -- If still no packages found, try a direct search with grep
+    if #all_packages == 0 then
+        io.write(colors.yellow .. "Trying alternative detection method...\n" .. colors.reset)
+        local grep_handle = io.popen("pm list packages | grep -i roblox | sed 's/^package://'")
+        local grep_output = grep_handle:read("*a")
+        grep_handle:close()
         
-        return {
-            enabled = true,
-            url = url,
-            interval = interval,
-            last_sent = 0
-        }
+        for line in grep_output:gmatch("[^\r\n]+") do
+            if line ~= "" then
+                table.insert(all_packages, line)
+            end
+        end
     end
     
-    return { enabled = false }
+    -- Manual fallback if still nothing found
+    if #all_packages == 0 then
+        io.write(colors.red .. "No Roblox packages found automatically.\n" .. colors.reset)
+        io.write(colors.yellow .. "Would you like to enter package names manually? (y/n): " .. colors.reset)
+        local manual_choice = io.read():lower()
+        
+        if manual_choice == "y" then
+            io.write(colors.cyan .. "Enter package names (comma-separated, e.g., com.roblox.client,com.roblox.client2):\n" .. colors.reset)
+            io.write(colors.white .. "> " .. colors.reset)
+            local manual_input = io.read()
+            
+            for pkg in manual_input:gmatch("[^,]+") do
+                local trimmed = pkg:gsub("^%s+", ""):gsub("%s+$", "")
+                if trimmed ~= "" then
+                    table.insert(all_packages, trimmed)
+                end
+            end
+        end
+    end
+    
+    -- Display found packages
+    if #all_packages > 0 then
+        io.write(colors.green .. "\nFound " .. #all_packages .. " Roblox package(s):\n" .. colors.reset)
+        for i, pkg in ipairs(all_packages) do
+            -- Highlight the package name with colors
+            local display_pkg = pkg
+            if pkg:match("clien[^t]") or pkg:match("clien$") then
+                -- Special highlighting for incomplete package names
+                io.write(string.format("  %d) %s%s%s %s\n", 
+                    i, 
+                    colors.yellow, 
+                    display_pkg, 
+                    colors.reset,
+                    colors.gray .. "(Note: This appears to be a truncated package name)" .. colors.reset
+                ))
+            else
+                io.write(string.format("  %d) %s%s%s\n", i, colors.cyan, display_pkg, colors.reset))
+            end
+        end
+        io.write(colors.white .. "\n")  -- Add spacing
+        return all_packages
+    else
+        io.write(colors.red .. "\nNo Roblox packages found!\n" .. colors.reset)
+        io.write(colors.yellow .. "Common Roblox package names to try:\n" .. colors.reset)
+        io.write("  - com.roblox.client\n")
+        io.write("  - com.roblox.client2\n")
+        io.write("  - com.roblox.clien\n")
+        io.write("  - com.rblx.client\n")
+        io.write("  - com.roblox.enterprise\n\n")
+        return nil
+    end
 end
 
+-- Improved manual package verification
+local function verify_package_exists(package_name)
+    if not package_name or package_name == "" then
+        return false
+    end
+    
+    -- Trim whitespace
+    package_name = package_name:gsub("^%s+", ""):gsub("%s+$", "")
+    
+    -- Check if package exists
+    local check = io.popen("pm list packages | grep -q '" .. package_name .. "' && echo found")
+    local result = check:read("*a")
+    check:close()
+    
+    if result:match("found") then
+        return true
+    end
+    
+    -- If exact match fails, try partial match
+    local partial_check = io.popen("pm list packages | grep -i '" .. package_name:gsub("%.", "\\.") .. "' | head -1")
+    local partial_result = partial_check:read("*a")
+    partial_check:close()
+    
+    if partial_result and partial_result ~= "" then
+        local found_pkg = partial_result:match("^package:(.+)$")
+        if found_pkg then
+            io.write(colors.yellow .. "Found similar package: " .. found_pkg .. "\n" .. colors.reset)
+            io.write(colors.white .. "Use this instead? (y/n): " .. colors.reset)
+            local choice = io.read():lower()
+            if choice == "y" then
+                return found_pkg
+            end
+        end
+    end
+    
+    return false
+end
+
+-- Updated first-time configuration with better package handling
 local function first_time_config()
     clear_screen()
     print_banner()
@@ -235,38 +305,100 @@ local function first_time_config()
     
     -- Method selection
     io.write(colors.yellow .. "\nMethod for fetching Roblox packages:\n" .. colors.reset)
-    io.write("  1) " .. colors.green .. "Automatic\n")
+    io.write("  1) " .. colors.green .. "Automatic (recommended)\n")
     io.write("  2) " .. colors.cyan .. "Manual\n")
+    io.write("  3) " .. colors.magenta .. "Debug mode (show all packages)\n")
     io.write(colors.white .. "  Choose: " .. colors.reset)
     local method = io.read()
     
     local packages_list = nil
+    
     if method == "1" then
         packages_list = find_roblox_packages()
-        if not packages_list then
-            io.write(colors.red .. "Automatic detection failed. Switching to manual mode.\n" .. colors.reset)
-            method = "2"
+        if not packages_list or #packages_list == 0 then
+            io.write(colors.red .. "\nAutomatic detection failed.\n" .. colors.reset)
+            io.write(colors.yellow .. "Would you like to switch to manual mode? (y/n): " .. colors.reset)
+            local switch = io.read():lower()
+            if switch == "y" then
+                method = "2"
+            else
+                io.write(colors.white .. "Press Enter to continue..." .. colors.reset)
+                io.read()
+                return false
+            end
         end
+    end
+    
+    if method == "3" then
+        -- Debug mode - show all packages for troubleshooting
+        io.write(colors.yellow .. "\n=== DEBUG MODE ===\n" .. colors.reset)
+        local debug_handle = io.popen("pm list packages | head -50")
+        local debug_output = debug_handle:read("*a")
+        debug_handle:close()
+        io.write(colors.gray .. debug_output .. colors.reset)
+        io.write(colors.white .. "\nPress Enter to continue with manual mode..." .. colors.reset)
+        io.read()
+        method = "2"
     end
     
     if method == "2" then
-        io.write(colors.cyan .. "Enter exact package name: " .. colors.reset)
-        local pkg_name = io.read()
-        local check = io.popen("pm list packages | grep -q " .. pkg_name .. " && echo found")
-        local result = check:read("*a")
-        check:close()
+        packages_list = {}
+        io.write(colors.cyan .. "\nEnter Roblox package name(s):\n" .. colors.reset)
+        io.write(colors.gray .. "Examples: com.roblox.client, com.roblox.client2, com.roblox.clien\n" .. colors.reset)
         
-        if not result:match("found") then
-            io.write(colors.red .. "Package not found! Please try again.\n" .. colors.reset)
-            io.write(colors.white .. "Press Enter to continue..." .. colors.reset)
-            io.read()
-            return false
+        local continue = true
+        while continue do
+            io.write(colors.white .. "Package " .. (#packages_list + 1) .. ": " .. colors.reset)
+            local pkg_name = io.read()
+            
+            if pkg_name == "" then
+                if #packages_list == 0 then
+                    io.write(colors.red .. "At least one package is required!\n" .. colors.reset)
+                else
+                    break
+                end
+            else
+                local verified = verify_package_exists(pkg_name)
+                if verified then
+                    if type(verified) == "string" then
+                        table.insert(packages_list, verified)
+                        io.write(colors.green .. "✓ Package added: " .. verified .. "\n" .. colors.reset)
+                    else
+                        table.insert(packages_list, pkg_name)
+                        io.write(colors.green .. "✓ Package added: " .. pkg_name .. "\n" .. colors.reset)
+                    end
+                else
+                    io.write(colors.red .. "✗ Package not found: " .. pkg_name .. "\n" .. colors.reset)
+                    io.write(colors.yellow .. "Would you like to add it anyway? (y/n): " .. colors.reset)
+                    local force = io.read():lower()
+                    if force == "y" then
+                        table.insert(packages_list, pkg_name)
+                        io.write(colors.yellow .. "✓ Package added (unverified): " .. pkg_name .. "\n" .. colors.reset)
+                    end
+                end
+            end
+            
+            io.write(colors.white .. "Add another package? (y/n): " .. colors.reset)
+            local add_more = io.read():lower()
+            if add_more ~= "y" then
+                break
+            end
         end
-        packages_list = { pkg_name }
     end
     
-    -- Package selection
-    local selected_packages = select_packages(packages_list)
+    -- Verify we have at least one package
+    if not packages_list or #packages_list == 0 then
+        io.write(colors.red .. "\nNo packages selected!\n" .. colors.reset)
+        io.write(colors.white .. "Press Enter to continue..." .. colors.reset)
+        io.read()
+        return false
+    end
+    
+    -- Package selection (if multiple packages found)
+    local selected_packages = packages_list
+    if #packages_list > 1 then
+        selected_packages = select_packages(packages_list)
+    end
     
     -- Server URL
     io.write(colors.cyan .. "\nEnter Roblox game URL: " .. colors.reset)
@@ -325,7 +457,11 @@ local function first_time_config()
         clear_screen()
         print_banner()
         io.write(colors.green .. "\n✅ Configuration completed successfully!\n" .. colors.reset)
-        io.write(colors.white .. "Press Enter to return to main menu..." .. colors.reset)
+        io.write(colors.cyan .. "\nConfigured packages:\n" .. colors.reset)
+        for i, pkg in ipairs(selected_packages) do
+            io.write(string.format("  %d) %s%s%s\n", i, colors.yellow, pkg, colors.reset))
+        end
+        io.write(colors.white .. "\nPress Enter to return to main menu..." .. colors.reset)
         io.read()
         return true
     else
@@ -335,90 +471,6 @@ local function first_time_config()
         return false
     end
 end
-
-local function launch_package(package_name, game_url)
-    local intent = "am start -a android.intent.action.VIEW -d " .. game_url .. " " .. package_name
-    local result = os.execute(intent .. " > /dev/null 2>&1")
-    return result == 0
-end
-
-local function check_package_status(package_name)
-    -- Check if package is running
-    local check = io.popen("pidof " .. package_name .. " 2>/dev/null")
-    local pid = check:read("*a"):gsub("%s+", "")
-    check:close()
-    
-    if pid == "" then
-        return "crashed"
-    end
-    
-    -- Check for heartbeat file
-    local heartbeat_file = HEARTBEAT_DIR .. package_name:gsub("%.", "_") .. ".heartbeat"
-    local file = io.open(heartbeat_file, "r")
-    if file then
-        local timestamp = tonumber(file:read("*a"))
-        file:close()
-        if timestamp and (os.time() - timestamp) < 30 then
-            return "ingame"
-        end
-    end
-    
-    return "running"
-end
-
-local function send_webhook(status_data)
-    if not config or not config.webhook or not config.webhook.enabled then
-        return
-    end
-    
-    -- Capture screenshot
-    local screenshot_path = os.getenv("HOME") .. "/NOKA/screenshot.png"
-    os.execute("screencap -p " .. screenshot_path .. " 2>/dev/null")
-    
-    -- Build Discord embed (simplified for now)
-    local embed = {
-        title = "Roblox Auto-Rejoin Status Update",
-        description = "Current status of all monitored packages",
-        color = 0x00ff00,
-        fields = {},
-        timestamp = os.date("!%Y-%m-%dT%H:%M:%S.000Z"),
-        footer = { text = "NOKA Manager v1.0" }
-    }
-    
-    for _, status in ipairs(status_data) do
-        table.insert(embed.fields, {
-            name = status.package,
-            value = string.format("Status: %s\nUptime: %d seconds", status.status, status.uptime or 0),
-            inline = true
-        })
-    end
-    
-    -- Here you would send the webhook with the screenshot
-    -- This is a simplified version; you'd need a proper HTTP library
-    log("Webhook would be sent here", "INFO")
-    
-    config.webhook.last_sent = os.time()
-    save_config(config)
-end
-
-local function update_dashboard_line(line_num, content)
-    io.write(colors.save_cursor)
-    io.write(string.format("\27[%d;1H", line_num))
-    io.write(colors.erase_line)
-    io.write(content)
-    io.write(colors.restore_cursor)
-    io.flush()
-end
-
-local function start_auto_rejoin()
-    if not config or not config.packages or #config.packages == 0 then
-        clear_screen()
-        print_banner()
-        io.write(colors.red .. "\n❌ No configuration found! Please run first-time configuration first.\n" .. colors.reset)
-        io.write(colors.white .. "Press Enter to return to main menu..." .. colors.reset)
-        io.read()
-        return
-    end
     
     clear_screen()
     print_banner()
