@@ -33,12 +33,16 @@ local function FIX_TTY()
     os.execute("stty sane 2>/dev/null")
 end
 
-local function PROMPT(msg)
-    FIX_TTY()
-    io.write(msg)
-    io.flush()
-    local res = io.read("*l") or ""
-    return res:gsub("^%s*(.-)%s*$", "%1")
+local function PROMPT(msg, mandatory)
+    while true do
+        FIX_TTY()
+        io.write(msg)
+        io.flush()
+        local raw = io.read("*l") or ""
+        local res = raw:gsub("^%s*(.-)%s*$", "%1")
+        if not mandatory or res ~= "" then return res end
+        SLEEP(0.1)
+    end
 end
 
 -- Root shell wrapper
@@ -346,16 +350,15 @@ local function SETUP()
     BANNER()
     OUT(C.YELLOW.."[ Noka Configuration ]"..C.RESET)
     OUT(" 1) automatic")
-    OUT(" 2) manual")
     OUT(C.BLUE .. " ────────────────────────────────────────────────────────────" .. C.RESET)
-    local mode = PROMPT(C.CYAN.." Select: "..C.RESET)
+    local mode = PROMPT(C.CYAN.." Select: "..C.RESET, true)
     
     local found = {}
     if mode == "1" then
         local list = SH("pm list packages | grep roblox")
         for p in list:gmatch("package:([%w%.%-]+)") do found[#found+1] = p end
     else
-        local raw = PROMPT(C.YELLOW.." Packages: "..C.RESET)
+        local raw = PROMPT(C.YELLOW.." Packages: "..C.RESET, true)
         for p in raw:gmatch("([^,]+)") do found[#found+1] = p:gsub("%s+", "") end
     end
     if #found == 0 then OUT(C.RED.."No packages!"); return end
@@ -380,7 +383,7 @@ local function MAIN()
         OUT(" 2) Run Auto-rejoin")
         OUT(" 9) Exit")
         OUT(C.BLUE .. " ────────────────────────────────────────────────────────────" .. C.RESET)
-        local c = PROMPT(C.CYAN .. " Select: " .. C.RESET)
+        local c = PROMPT(C.CYAN .. " Select: " .. C.RESET, true)
         if c == "1" then SETUP() elseif c == "2" then START_REJOIN() elseif c == "9" then break end
     end
 end
