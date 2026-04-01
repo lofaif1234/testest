@@ -161,7 +161,7 @@ local function find_roblox_packages()
     -- More comprehensive search for any Roblox-related packages
     local patterns = {
         "com\\.roblox\\.client",
-        "com\\.roblox\\.clien",  -- For incomplete package names
+        "com\\.roblox\\.clien",
         "com\\.roblox\\.",
         "roblox",
         "com\\.rblx",
@@ -230,22 +230,19 @@ local function find_roblox_packages()
     if #all_packages > 0 then
         io.write(colors.green .. "\nFound " .. #all_packages .. " Roblox package(s):\n" .. colors.reset)
         for i, pkg in ipairs(all_packages) do
-            -- Highlight the package name with colors
-            local display_pkg = pkg
             if pkg:match("clien[^t]") or pkg:match("clien$") then
-                -- Special highlighting for incomplete package names
                 io.write(string.format("  %d) %s%s%s %s\n", 
                     i, 
                     colors.yellow, 
-                    display_pkg, 
+                    pkg, 
                     colors.reset,
                     colors.gray .. "(Note: This appears to be a truncated package name)" .. colors.reset
                 ))
             else
-                io.write(string.format("  %d) %s%s%s\n", i, colors.cyan, display_pkg, colors.reset))
+                io.write(string.format("  %d) %s%s%s\n", i, colors.cyan, pkg, colors.reset))
             end
         end
-        io.write(colors.white .. "\n")  -- Add spacing
+        io.write(colors.white .. "\n")
         return all_packages
     else
         io.write(colors.red .. "\nNo Roblox packages found!\n" .. colors.reset)
@@ -259,16 +256,13 @@ local function find_roblox_packages()
     end
 end
 
--- Improved manual package verification
 local function verify_package_exists(package_name)
     if not package_name or package_name == "" then
         return false
     end
     
-    -- Trim whitespace
     package_name = package_name:gsub("^%s+", ""):gsub("%s+$", "")
     
-    -- Check if package exists
     local check = io.popen("pm list packages | grep -q '" .. package_name .. "' && echo found")
     local result = check:read("*a")
     check:close()
@@ -277,7 +271,6 @@ local function verify_package_exists(package_name)
         return true
     end
     
-    -- If exact match fails, try partial match
     local partial_check = io.popen("pm list packages | grep -i '" .. package_name:gsub("%.", "\\.") .. "' | head -1")
     local partial_result = partial_check:read("*a")
     partial_check:close()
@@ -297,13 +290,60 @@ local function verify_package_exists(package_name)
     return false
 end
 
--- Updated first-time configuration with better package handling
+local function select_packages(packages_list)
+    io.write(colors.yellow .. "\nPackage selection:\n" .. colors.reset)
+    io.write("  1) " .. colors.green .. "All packages\n" .. colors.reset)
+    io.write("  2) " .. colors.cyan .. "Manual selection\n" .. colors.reset)
+    io.write(colors.white .. "  Choose: " .. colors.reset)
+    
+    local choice = io.read()
+    
+    if choice == "1" then
+        return packages_list
+    elseif choice == "2" then
+        io.write(colors.yellow .. "Enter package numbers (comma-separated, e.g., 1,2): " .. colors.reset)
+        local selection = io.read()
+        local selected = {}
+        for num in selection:gmatch("%d+") do
+            local index = tonumber(num)
+            if index and index >= 1 and index <= #packages_list then
+                table.insert(selected, packages_list[index])
+            end
+        end
+        return selected
+    else
+        io.write(colors.red .. "Invalid choice, using all packages\n" .. colors.reset)
+        return packages_list
+    end
+end
+
+local function configure_webhook()
+    io.write(colors.yellow .. "\nEnable Discord webhook? (1=Yes, 2=No): " .. colors.reset)
+    local enable = io.read()
+    
+    if enable == "1" then
+        io.write(colors.cyan .. "Enter Discord webhook URL: " .. colors.reset)
+        local url = io.read()
+        io.write(colors.cyan .. "Enter message interval (seconds, min 30): " .. colors.reset)
+        local interval = tonumber(io.read()) or 60
+        if interval < 30 then interval = 30 end
+        
+        return {
+            enabled = true,
+            url = url,
+            interval = interval,
+            last_sent = 0
+        }
+    end
+    
+    return { enabled = false }
+end
+
 local function first_time_config()
     clear_screen()
     print_banner()
     io.write(colors.green .. "\n=== FIRST TIME CONFIGURATION ===\n" .. colors.reset)
     
-    -- Method selection
     io.write(colors.yellow .. "\nMethod for fetching Roblox packages:\n" .. colors.reset)
     io.write("  1) " .. colors.green .. "Automatic (recommended)\n")
     io.write("  2) " .. colors.cyan .. "Manual\n")
@@ -330,7 +370,6 @@ local function first_time_config()
     end
     
     if method == "3" then
-        -- Debug mode - show all packages for troubleshooting
         io.write(colors.yellow .. "\n=== DEBUG MODE ===\n" .. colors.reset)
         local debug_handle = io.popen("pm list packages | head -50")
         local debug_output = debug_handle:read("*a")
@@ -386,7 +425,6 @@ local function first_time_config()
         end
     end
     
-    -- Verify we have at least one package
     if not packages_list or #packages_list == 0 then
         io.write(colors.red .. "\nNo packages selected!\n" .. colors.reset)
         io.write(colors.white .. "Press Enter to continue..." .. colors.reset)
@@ -394,20 +432,16 @@ local function first_time_config()
         return false
     end
     
-    -- Package selection (if multiple packages found)
     local selected_packages = packages_list
     if #packages_list > 1 then
         selected_packages = select_packages(packages_list)
     end
     
-    -- Server URL
     io.write(colors.cyan .. "\nEnter Roblox game URL: " .. colors.reset)
     local game_url = io.read()
     
-    -- Webhook configuration
     local webhook = configure_webhook()
     
-    -- Start interval
     io.write(colors.yellow .. "\nStart interval between packages:\n" .. colors.reset)
     io.write("  1) " .. colors.green .. "Custom\n")
     io.write("  2) " .. colors.cyan .. "Default (120 seconds)\n")
@@ -421,7 +455,6 @@ local function first_time_config()
         if start_interval < 1 then start_interval = 1 end
     end
     
-    -- Restart configuration
     io.write(colors.yellow .. "\nEnable auto-restart? (1=Yes, 2=No): " .. colors.reset)
     local restart_enabled = io.read()
     
@@ -443,7 +476,6 @@ local function first_time_config()
         }
     end
     
-    -- Save configuration
     config = {
         packages = selected_packages,
         game_url = game_url,
@@ -471,13 +503,73 @@ local function first_time_config()
         return false
     end
 end
+
+local function launch_package(package_name, game_url)
+    local intent = "am start -a android.intent.action.VIEW -d " .. game_url .. " " .. package_name
+    local result = os.execute(intent .. " > /dev/null 2>&1")
+    return result == 0
+end
+
+local function check_package_status(package_name)
+    local check = io.popen("pidof " .. package_name .. " 2>/dev/null")
+    local pid = check:read("*a"):gsub("%s+", "")
+    check:close()
+    
+    if pid == "" then
+        return "crashed"
+    end
+    
+    local heartbeat_file = HEARTBEAT_DIR .. package_name:gsub("%.", "_") .. ".heartbeat"
+    local file = io.open(heartbeat_file, "r")
+    if file then
+        local timestamp = tonumber(file:read("*a"))
+        file:close()
+        if timestamp and (os.time() - timestamp) < 30 then
+            return "ingame"
+        end
+    end
+    
+    return "running"
+end
+
+local function send_webhook(status_data)
+    if not config or not config.webhook or not config.webhook.enabled then
+        return
+    end
+    
+    local screenshot_path = os.getenv("HOME") .. "/NOKA/screenshot.png"
+    os.execute("screencap -p " .. screenshot_path .. " 2>/dev/null")
+    
+    log("Webhook would be sent here", "INFO")
+    
+    config.webhook.last_sent = os.time()
+    save_config(config)
+end
+
+local function update_dashboard_line(line_num, content)
+    io.write(colors.save_cursor)
+    io.write(string.format("\27[%d;1H", line_num))
+    io.write(colors.erase_line)
+    io.write(content)
+    io.write(colors.restore_cursor)
+    io.flush()
+end
+
+local function start_auto_rejoin()
+    if not config or not config.packages or #config.packages == 0 then
+        clear_screen()
+        print_banner()
+        io.write(colors.red .. "\n❌ No configuration found! Please run first-time configuration first.\n" .. colors.reset)
+        io.write(colors.white .. "Press Enter to return to main menu..." .. colors.reset)
+        io.read()
+        return
+    end
     
     clear_screen()
     print_banner()
     io.write(colors.green .. "\n=== AUTO-REJOIN ACTIVE ===\n" .. colors.reset)
     io.write(colors.yellow .. "Press Ctrl+C to stop\n\n" .. colors.reset)
     
-    -- Initialize packages state
     local package_states = {}
     local start_time = os.time()
     
@@ -491,7 +583,6 @@ end
         }
     end
     
-    -- Launch first package
     local function launch_next_package(index)
         if index > #config.packages then
             return
@@ -515,10 +606,8 @@ end
         end
     end
     
-    -- Start launch sequence
     launch_next_package(1)
     
-    -- Main monitoring loop
     running = true
     local last_webhook = 0
     local last_heartbeat_check = 0
@@ -526,7 +615,6 @@ end
     while running do
         local current_time = os.time()
         
-        -- Update dashboard
         for pkg, state in pairs(package_states) do
             if state.status == "ingame" then
                 state.uptime = current_time - state.launch_time
@@ -552,7 +640,6 @@ end
             update_dashboard_line(state.line_num, status_text)
         end
         
-        -- Check package status every 5 seconds
         if current_time - last_heartbeat_check >= 5 then
             for pkg, state in pairs(package_states) do
                 local status = check_package_status(pkg)
@@ -561,12 +648,6 @@ end
                     state.status = "crashed"
                     log(pkg .. " has crashed", "WARN")
                     
-                    -- Send webhook notification
-                    if config.webhook.enabled then
-                        -- Would send crash notification
-                    end
-                    
-                    -- Handle restart if enabled
                     if config.restart.enabled then
                         state.status = "restarting"
                         if config.restart.type == "game" then
@@ -593,7 +674,6 @@ end
             last_heartbeat_check = current_time
         end
         
-        -- Send periodic webhook
         if config.webhook.enabled and current_time - last_webhook >= config.webhook.interval then
             local status_data = {}
             for pkg, state in pairs(package_states) do
@@ -607,7 +687,6 @@ end
             last_webhook = current_time
         end
         
-        -- Check for restart interval
         if config.restart.enabled then
             for pkg, state in pairs(package_states) do
                 if state.status == "ingame" and (current_time - state.launch_time) >= config.restart.interval then
@@ -631,7 +710,6 @@ end
         
         os.execute("sleep 1")
     end
-end
 end
 
 local function webhook_config()
@@ -740,10 +818,8 @@ end
 
 -- Main program
 local function main()
-    -- Load existing config
     config = load_config()
     
-    -- Main menu loop
     while true do
         clear_screen()
         print_banner()
