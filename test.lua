@@ -31,7 +31,7 @@ local colors = {
 local config = nil
 local running = false
 
--- Simple JSON encoder/decoder
+-- Simple JSON encoder/decoder (Fixed)
 local json = {}
 
 function json.encode_table(t, indent)
@@ -92,15 +92,137 @@ function json.decode(str)
     if not str or str == "" then
         return nil
     end
-    local func, err = load("return " .. str)
-    if not func then
-        return nil
+    
+    -- Remove whitespace and newlines for safer parsing
+    str = str:gsub("[\n\r\t]", " ")
+    
+    -- Create a safe Lua table from JSON string
+    local function parse_value(pos)
+        pos = pos or 1
+        local ch = str:sub(pos, pos)
+        
+        -- Skip whitespace
+        while ch and ch:match("%s") do
+            pos = pos + 1
+            ch = str:sub(pos, pos)
+        end
+        
+        if ch == '"' then
+            -- Parse string
+            local start = pos + 1
+            local end_pos = start
+            while end_pos <= #str do
+                if str:sub(end_pos, end_pos) == '"' and str:sub(end_pos-1, end_pos-1) ~= '\\' then
+                    break
+                end
+                end_pos = end_pos + 1
+            end
+            local value = str:sub(start, end_pos - 1)
+            return value, end_pos + 1
+        elseif ch == '{' then
+            -- Parse object
+            local obj = {}
+            pos = pos + 1
+            while true do
+                -- Skip whitespace
+                local next_ch = str:sub(pos, pos)
+                while next_ch and next_ch:match("%s") do
+                    pos = pos + 1
+                    next_ch = str:sub(pos, pos)
+                end
+                
+                if next_ch == '}' then
+                    pos = pos + 1
+                    break
+                end
+                
+                -- Parse key
+                local key, new_pos = parse_value(pos)
+                pos = new_pos
+                
+                -- Skip to colon
+                while str:sub(pos, pos):match("%s") do
+                    pos = pos + 1
+                end
+                if str:sub(pos, pos) == ':' then
+                    pos = pos + 1
+                end
+                
+                -- Parse value
+                local val, new_pos = parse_value(pos)
+                pos = new_pos
+                obj[key] = val
+                
+                -- Skip to comma or end
+                while str:sub(pos, pos):match("%s") do
+                    pos = pos + 1
+                end
+                if str:sub(pos, pos) == ',' then
+                    pos = pos + 1
+                elseif str:sub(pos, pos) == '}' then
+                    pos = pos + 1
+                    break
+                end
+            end
+            return obj, pos
+        elseif ch == '[' then
+            -- Parse array
+            local arr = {}
+            pos = pos + 1
+            local index = 1
+            while true do
+                -- Skip whitespace
+                local next_ch = str:sub(pos, pos)
+                while next_ch and next_ch:match("%s") do
+                    pos = pos + 1
+                    next_ch = str:sub(pos, pos)
+                end
+                
+                if next_ch == ']' then
+                    pos = pos + 1
+                    break
+                end
+                
+                -- Parse value
+                local val, new_pos = parse_value(pos)
+                pos = new_pos
+                arr[index] = val
+                index = index + 1
+                
+                -- Skip to comma or end
+                while str:sub(pos, pos):match("%s") do
+                    pos = pos + 1
+                end
+                if str:sub(pos, pos) == ',' then
+                    pos = pos + 1
+                elseif str:sub(pos, pos) == ']' then
+                    pos = pos + 1
+                    break
+                end
+            end
+            return arr, pos
+        elseif ch:match("%d") or ch == '-' then
+            -- Parse number
+            local start = pos
+            while pos <= #str and (str:sub(pos, pos):match("[%d%.%-]")) do
+                pos = pos + 1
+            end
+            local num_str = str:sub(start, pos - 1)
+            local num = tonumber(num_str)
+            return num, pos
+        elseif ch == 't' and str:sub(pos, pos+3) == "true" then
+            return true, pos + 4
+        elseif ch == 'f' and str:sub(pos, pos+4) == "false" then
+            return false, pos + 5
+        elseif ch == 'n' and str:sub(pos, pos+3) == "null" then
+            return nil, pos + 4
+        else
+            return nil, pos
+        end
     end
-    local success, val = pcall(func)
-    if success then
-        return val
-    end
-    return nil
+    
+    local result, _ = parse_value(1)
+    return result
 end
 
 -- Utility Functions
@@ -124,8 +246,11 @@ end
 
 local function load_config()
     ensure_directories()
+    
+    -- Check if config file exists
     local file = io.open(CONFIG_PATH, "r")
     if not file then
+        log("No config file found", "INFO")
         return nil
     end
     
@@ -133,15 +258,44 @@ local function load_config()
     file:close()
     
     if not content or content == "" then
+        log("Config file is empty", "INFO")
         return nil
     end
     
-    local result = json.decode(content)
+    -- Debug: Print config content
+    log("Loading config: " .. content:sub(1, 100), "DEBUG")
+    
+    local success, result = pcall(function()
+        return json.decode(content)
+    end)
+    
+    if not success then
+        log("Failed to parse config.json: " .. tostring(result), "ERROR")
+        return nil
+    end
+    
+    if not result then
+        log("Config decoded to nil", "ERROR")
+        return nil
+    end
+    
+    -- Validate required fields
+    if not result.packages or not result.game_url then
+        log("Config missing required fields", "ERROR")
+        return nil
+    end
+    
+    log("Config loaded successfully with " .. #result.packages .. " packages", "INFO")
     return result
 end
 
 local function save_config(cfg)
     ensure_directories()
+    
+    if not cfg then
+        log("Attempted to save nil config", "ERROR")
+        return false
+    end
     
     local file = io.open(CONFIG_PATH, "w")
     if not file then
@@ -149,9 +303,12 @@ local function save_config(cfg)
         return false
     end
     
-    local json_str = json.encode(cfg)
-    if not json_str then
-        log("Failed to encode config to JSON", "ERROR")
+    local success, json_str = pcall(function()
+        return json.encode(cfg)
+    end)
+    
+    if not success then
+        log("Failed to encode config to JSON: " .. tostring(json_str), "ERROR")
         file:close()
         return false
     end
@@ -160,7 +317,7 @@ local function save_config(cfg)
     file:close()
     os.execute("chmod 644 " .. CONFIG_PATH .. " 2>/dev/null")
     
-    log("Configuration saved successfully", "INFO")
+    log("Configuration saved successfully: " .. json_str:sub(1, 100), "INFO")
     return true
 end
 
@@ -455,10 +612,17 @@ local function first_time_config()
         version = "1.0"
     }
     
+    io.write(colors.yellow .. "\nSaving configuration...\n" .. colors.reset)
+    
     if save_config(config) then
         clear_screen()
         print_banner()
         io.write(colors.green .. "\n✅ Configuration completed!\n" .. colors.reset)
+        io.write(colors.cyan .. "\nSaved packages:\n" .. colors.reset)
+        for i, pkg in ipairs(selected_packages) do
+            io.write(string.format("  %d) %s%s%s\n", i, colors.yellow, pkg, colors.reset))
+        end
+        io.write(colors.green .. "\nGame URL: " .. colors.cyan .. game_url .. colors.reset .. "\n")
         io.write(colors.white .. "\nPress Enter to return..." .. colors.reset)
         io.read()
         return true
@@ -522,11 +686,35 @@ local function update_dashboard_line(line_num, content)
 end
 
 local function start_auto_rejoin()
-    if not config or not config.packages or #config.packages == 0 then
+    -- Force reload config before starting
+    config = load_config()
+    
+    if not config then
         clear_screen()
         print_banner()
         io.write(colors.red .. "\n❌ No configuration found!\n" .. colors.reset)
-        io.write(colors.white .. "Press Enter to return..." .. colors.reset)
+        io.write(colors.yellow .. "Please run option 1 (First time configuration) first.\n" .. colors.reset)
+        io.write(colors.white .. "\nPress Enter to return..." .. colors.reset)
+        io.read()
+        return
+    end
+    
+    if not config.packages or #config.packages == 0 then
+        clear_screen()
+        print_banner()
+        io.write(colors.red .. "\n❌ No packages configured!\n" .. colors.reset)
+        io.write(colors.yellow .. "Please run option 1 (First time configuration) first.\n" .. colors.reset)
+        io.write(colors.white .. "\nPress Enter to return..." .. colors.reset)
+        io.read()
+        return
+    end
+    
+    if not config.game_url or config.game_url == "" then
+        clear_screen()
+        print_banner()
+        io.write(colors.red .. "\n❌ No game URL configured!\n" .. colors.reset)
+        io.write(colors.yellow .. "Please run option 1 (First time configuration) or option 4 to update URL.\n" .. colors.reset)
+        io.write(colors.white .. "\nPress Enter to return..." .. colors.reset)
         io.read()
         return
     end
@@ -534,6 +722,7 @@ local function start_auto_rejoin()
     clear_screen()
     print_banner()
     io.write(colors.green .. "\n=== AUTO-REJOIN ACTIVE ===\n" .. colors.reset)
+    io.write(colors.cyan .. "Game URL: " .. config.game_url .. "\n" .. colors.reset)
     io.write(colors.yellow .. "Press Ctrl+C to stop\n\n" .. colors.reset)
     
     local package_states = {}
@@ -544,7 +733,7 @@ local function start_auto_rejoin()
             uptime = 0,
             last_action = 0,
             launch_time = 0,
-            line_num = 8 + i
+            line_num = 10 + i
         }
         io.write(string.format("  %s%s%s - %sPending%s\n", colors.cyan, pkg, colors.reset, colors.yellow, colors.reset))
     end
@@ -603,6 +792,9 @@ local function start_auto_rejoin()
             elseif state.status == "pending" then
                 status_color = colors.gray
                 status_text_display = "PENDING"
+            elseif state.status == "failed" then
+                status_color = colors.red
+                status_text_display = "FAILED"
             end
             
             local status_text = string.format(
@@ -617,34 +809,39 @@ local function start_auto_rejoin()
         
         if current_time - last_heartbeat_check >= 5 then
             for pkg, state in pairs(package_states) do
-                local status = check_package_status(pkg)
-                
-                if status == "crashed" and state.status ~= "crashed" and state.status ~= "restarting" and state.status ~= "pending" then
-                    state.status = "crashed"
-                    log(pkg .. " has crashed", "WARN")
+                if state.status ~= "failed" and state.status ~= "pending" then
+                    local status = check_package_status(pkg)
                     
-                    if config.restart.enabled then
-                        state.status = "restarting"
-                        update_dashboard_line(state.line_num,
-                            string.format("  %s%-30s%s %sRESTARTING...%s", colors.cyan, pkg, colors.reset, colors.magenta, colors.reset))
+                    if status == "crashed" and state.status ~= "crashed" and state.status ~= "restarting" then
+                        state.status = "crashed"
+                        log(pkg .. " has crashed", "WARN")
                         
-                        if config.restart.type == "game" then
-                            os.execute("am force-stop " .. pkg .. " 2>/dev/null")
-                            os.execute("sleep 3")
+                        if config.restart.enabled then
+                            state.status = "restarting"
+                            update_dashboard_line(state.line_num,
+                                string.format("  %s%-30s%s %sRESTARTING...%s", colors.cyan, pkg, colors.reset, colors.magenta, colors.reset))
+                            
+                            if config.restart.type == "game" then
+                                os.execute("am force-stop " .. pkg .. " 2>/dev/null")
+                                os.execute("sleep 3")
+                            end
+                            
+                            if launch_package(pkg, config.game_url) then
+                                state.launch_time = os.time()
+                                state.status = "launching"
+                                log(pkg .. " restarted successfully", "INFO")
+                            else
+                                state.status = "crashed"
+                                log(pkg .. " failed to restart", "ERROR")
+                            end
+                            state.last_action = os.time()
                         end
-                        
-                        if launch_package(pkg, config.game_url) then
-                            state.launch_time = os.time()
-                            state.status = "launching"
-                        else
-                            state.status = "crashed"
+                    elseif status == "ingame" then
+                        if state.status ~= "ingame" then
+                            state.status = "ingame"
+                            state.launch_time = current_time
+                            log(pkg .. " is now in-game", "INFO")
                         end
-                        state.last_action = os.time()
-                    end
-                elseif status == "ingame" then
-                    if state.status ~= "ingame" then
-                        state.status = "ingame"
-                        state.launch_time = current_time
                     end
                 end
             end
@@ -668,6 +865,8 @@ local function start_auto_rejoin()
             for pkg, state in pairs(package_states) do
                 if state.status == "ingame" and (current_time - state.launch_time) >= config.restart.interval then
                     state.status = "restarting"
+                    update_dashboard_line(state.line_num,
+                        string.format("  %s%-30s%s %sRESTARTING (interval)%s", colors.cyan, pkg, colors.reset, colors.magenta, colors.reset))
                     
                     if config.restart.type == "game" then
                         os.execute("am force-stop " .. pkg .. " 2>/dev/null")
@@ -677,6 +876,7 @@ local function start_auto_rejoin()
                     if launch_package(pkg, config.game_url) then
                         state.launch_time = os.time()
                         state.status = "ingame"
+                        log(pkg .. " restarted due to interval", "INFO")
                     end
                     state.last_action = os.time()
                 end
@@ -691,6 +891,8 @@ local function webhook_config()
     clear_screen()
     print_banner()
     io.write(colors.green .. "\n=== WEBHOOK CONFIGURATION ===\n" .. colors.reset)
+    
+    config = load_config()
     
     if config and config.webhook then
         io.write(colors.cyan .. "Current status: " .. (config.webhook.enabled and "Enabled" or "Disabled") .. "\n" .. colors.reset)
