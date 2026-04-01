@@ -350,8 +350,12 @@ end
 
 local function MAIN()
     while true do
-        BANNER(); OUT("1) Setup & Deploy  2) Run Auto-Rejoin  9) Exit")
-        io.write(C.CYAN.." Select: "..C.RESET); local c = io.read()
+        BANNER()
+        OUT(" 1) Setup & deploy")
+        OUT(" 2) Run Auto-rejoin")
+        OUT(" 9) Exit")
+        OUT(C.BLUE .. " ────────────────────────────────────────────────────────────" .. C.RESET)
+        io.write(C.CYAN .. " Select: " .. C.RESET); local c = io.read()
         if c == "1" then SETUP() elseif c == "2" then START_REJOIN() elseif c == "9" then break end
     end
 end
